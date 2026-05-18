@@ -667,17 +667,32 @@ async def agent_fidelisation(question: str) -> dict:
     return {"agent": "clients", "reponse": str(result), "tokens": 0, "alertes": [], "donnees": []}
 
 def run_agent(agent_func, question: str) -> dict:
-    """Lance un agent async depuis du code synchrone Streamlit"""
-    import nest_asyncio
-    import asyncio
+    """Lance un agent async — compatible App Service et local"""
     import concurrent.futures
+    import asyncio
+
+    def run_in_thread():
+        # Crée une nouvelle boucle propre dans un thread separe
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(agent_func(question))
+        finally:
+            loop.close()
 
     try:
-        # Methode 1 — thread separe (evite le conflit avec la boucle Streamlit)
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            future = pool.submit(asyncio.run, agent_func(question))
-            return future.result(timeout=60)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(run_in_thread)
+            return future.result(timeout=120)
 
+    except concurrent.futures.TimeoutError:
+        return {
+            "agent"  : "erreur",
+            "reponse": "Timeout — l'agent a pris trop de temps. Reessayez.",
+            "tokens" : 0,
+            "alertes": [],
+            "donnees": []
+        }
     except Exception as e:
         return {
             "agent"  : "erreur",
