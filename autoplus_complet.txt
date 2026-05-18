@@ -1,0 +1,1173 @@
+================================================================================
+PROJET  IA — SYSTÈME MULTI-AGENTS
+================================================================================
+
+
+Structure du projet :
+
+autoplus/
+├── app.py
+├── .env
+├── requirements.txt
+├── COLONNES_EXCEL.txt
+├── backend/
+│   ├── config/settings.py
+│   ├── indexer.py
+│   ├── orchestrateur.py
+│   ├── agents/agents.py
+│   └── utils/
+│       ├── rag.py
+│       └── export.py
+├── frontend/
+│   ├── styles/theme.py
+│   └── components/html_blocks.py
+└── data/
+    ├── politiques/
+    ├── stocks/
+    ├── commandes/
+    └── clients/
+
+Commande pour lancer :
+    pip install -r requirements.txt
+    streamlit run app.py
+
+================================================================================
+FICHIER 1 : .env
+================================================================================
+
+AZURE_OPENAI_ENDPOINT=https://TON-NOM.openai.azure.com/
+AZURE_OPENAI_DEPLOYMENT=gpt-4-5
+EMBEDDING_MODEL=text-embedding-ada-002
+AZURE_SEARCH_ENDPOINT=https://srch-team13.search.windows.net
+
+================================================================================
+FICHIER 2 : requirements.txt
+================================================================================
+
+streamlit
+openai>=1.30.0
+azure-identity>=1.15.0
+azure-search-documents
+pypdf
+python-dotenv
+pandas
+openpyxl
+ragas
+datasets
+reportlab
+python-pptx
+Pillow
+
+================================================================================
+FICHIER 3 : backend/config/settings.py
+================================================================================
+
+import os
+from dotenv import load_dotenv
+from azure.identity import DefaultAzureCredential, get_bearer_token_provider
+from openai import AzureOpenAI
+
+load_dotenv()
+
+# ==============================================================================
+# SECTION 1 : INFORMATIONS DE VOTRE COMPAGNIE
+# → Changez ces valeurs selon votre compagnie
+# ==============================================================================
+COMPANY_NAME   = "AutoPlus"
+COMPANY_SLOGAN = "Votre partenaire automobile de confiance"
+
+# ==============================================================================
+# SECTION 2 : AZURE OPENAI
+# → Copiez vos valeurs depuis portal.azure.com > Azure OpenAI > Keys & Endpoint
+# ==============================================================================
+AZURE_OPENAI_ENDPOINT   = os.getenv("AZURE_OPENAI_ENDPOINT")
+AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4-5")
+EMBEDDING_MODEL         = os.getenv("EMBEDDING_MODEL", "text-embedding-ada-002")
+
+# ==============================================================================
+# SECTION 3 : AZURE AI SEARCH
+# → Copiez l'URL depuis portal.azure.com > Azure AI Search > Overview
+# ==============================================================================
+AZURE_SEARCH_ENDPOINT = os.getenv("AZURE_SEARCH_ENDPOINT")
+SEARCH_ENDPOINT       = AZURE_SEARCH_ENDPOINT
+
+# Index pour chaque agent
+INDEX_POLITIQUES = "index-politiques-ventes"
+INDEX_STOCKS     = "index-stocks-pieces"
+INDEX_COMMANDES  = "index-commandes"
+INDEX_CLIENTS    = "index-clients-fidelisation"
+
+# ==============================================================================
+# SECTION 4 : DOSSIERS DE DONNÉES
+# → Mettez vos fichiers PDF/Excel dans ces dossiers
+# ==============================================================================
+DOSSIER_POLITIQUES = "data/politiques"
+DOSSIER_STOCKS     = "data/stocks"
+DOSSIER_COMMANDES  = "data/commandes"
+DOSSIER_CLIENTS    = "data/clients"
+
+# ==============================================================================
+# SECTION 5 : PARAMÈTRES RAG
+# → Ajustez selon la qualité des réponses
+# ==============================================================================
+CHUNK_SIZE    = 500
+CHUNK_OVERLAP = 50
+TOP_K_RESULTS = 5
+
+# ==============================================================================
+# SECTION 6 : ALERTES STOCKS
+# → Seuils pour les alertes de stock
+# ==============================================================================
+SEUIL_STOCK_BAS      = 5
+SEUIL_STOCK_CRITIQUE = 2
+JOURS_RETARD_ALERTE  = 7
+
+# ==============================================================================
+# SECTION 7 : COLONNES EXCEL
+# → Doit correspondre exactement aux colonnes de vos fichiers Excel
+# ==============================================================================
+COLONNES_STOCKS = {
+    "piece_id"       : "ID_Piece",
+    "nom"            : "Nom_Piece",
+    "quantite"       : "Quantite",
+    "seuil_minimum"  : "Seuil_Minimum",
+    "date_livraison" : "Date_Livraison_Prevue",
+    "fournisseur"    : "Fournisseur",
+    "modele_voiture" : "Modele_Voiture",
+}
+
+COLONNES_COMMANDES = {
+    "commande_id"   : "ID_Commande",
+    "client_nom"    : "Nom_Client",
+    "voiture_modele": "Modele_Voiture",
+    "date_commande" : "Date_Commande",
+    "statut"        : "Statut",
+    "montant"       : "Montant_Total",
+    "vendeur"       : "Vendeur",
+}
+
+COLONNES_CLIENTS = {
+    "client_id"     : "ID_Client",
+    "nom"           : "Nom_Client",
+    "email"         : "Email",
+    "telephone"     : "Telephone",
+    "achats_total"  : "Nombre_Achats",
+    "valeur_total"  : "Valeur_Totale",
+    "derniere_visite": "Derniere_Visite",
+    "niveau_fidelite": "Niveau_Fidelite",
+}
+
+# ==============================================================================
+# NE PAS MODIFIER — Connexions Azure automatiques
+# ==============================================================================
+def get_credential():
+    return DefaultAzureCredential()
+
+def get_openai_client():
+    credential = get_credential()
+    token_provider = get_bearer_token_provider(
+        credential,
+        "https://cognitiveservices.azure.com/.default"
+    )
+    return AzureOpenAI(
+        azure_endpoint=AZURE_OPENAI_ENDPOINT,
+        azure_ad_token_provider=token_provider,
+        api_version="2024-12-01-preview",
+    )
+
+================================================================================
+FICHIER 4 : backend/indexer.py
+================================================================================
+
+import os
+import uuid
+from pypdf import PdfReader
+from azure.search.documents import SearchClient
+from azure.search.documents.indexes import SearchIndexClient
+from azure.search.documents.indexes.models import (
+    SearchIndex, SearchFieldDataType,
+    SimpleField, SearchableField, SearchField,
+    VectorSearch, HnswAlgorithmConfiguration, VectorSearchProfile
+)
+from backend.config.settings import (
+    SEARCH_ENDPOINT, EMBEDDING_MODEL,
+    CHUNK_SIZE, CHUNK_OVERLAP,
+    INDEX_POLITIQUES, INDEX_STOCKS, INDEX_COMMANDES, INDEX_CLIENTS,
+    DOSSIER_POLITIQUES, DOSSIER_STOCKS, DOSSIER_COMMANDES, DOSSIER_CLIENTS,
+    get_credential, get_openai_client
+)
+
+def index_existe(credential, index_name):
+    """Vérifie si l'index existe déjà dans Azure AI Search"""
+    try:
+        client = SearchIndexClient(SEARCH_ENDPOINT, credential)
+        client.get_index(index_name)
+        return True
+    except:
+        return False
+
+def get_embedding(openai_client, texte):
+    """Génère un embedding pour un texte"""
+    response = openai_client.embeddings.create(
+        input=texte,
+        model=EMBEDDING_MODEL
+    )
+    return response.data[0].embedding
+
+def chunker(texte, taille=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
+    """Découpe un texte en morceaux avec chevauchement"""
+    mots = texte.split()
+    chunks = []
+    i = 0
+    while i < len(mots):
+        chunks.append(" ".join(mots[i:i + taille]))
+        i += taille - overlap
+    return chunks
+
+def creer_index(credential, index_name):
+    """Crée un index vectoriel dans Azure AI Search"""
+    client = SearchIndexClient(SEARCH_ENDPOINT, credential)
+    fields = [
+        SimpleField(name="id",      type=SearchFieldDataType.String, key=True),
+        SearchableField(name="contenu", type=SearchFieldDataType.String),
+        SimpleField(name="fichier", type=SearchFieldDataType.String, filterable=True),
+        SimpleField(name="page",    type=SearchFieldDataType.Int32,  filterable=True),
+        SimpleField(name="agent",   type=SearchFieldDataType.String, filterable=True),
+        SearchField(
+            name="embedding",
+            type=SearchFieldDataType.Collection(SearchFieldDataType.Single),
+            searchable=True,
+            vector_search_dimensions=1536,
+            vector_search_profile_name="profil-vecteur"
+        ),
+    ]
+    vector_search = VectorSearch(
+        algorithms=[HnswAlgorithmConfiguration(name="algo-hnsw")],
+        profiles=[VectorSearchProfile(
+            name="profil-vecteur",
+            algorithm_configuration_name="algo-hnsw"
+        )]
+    )
+    client.create_or_update_index(
+        SearchIndex(name=index_name, fields=fields, vector_search=vector_search)
+    )
+    print(f"✅ Index '{index_name}' créé !")
+
+def indexer_pdfs(credential, openai_client, dossier, index_name, nom_agent):
+    """Indexe tous les PDFs d'un dossier dans Azure AI Search"""
+    if not os.path.exists(dossier):
+        os.makedirs(dossier)
+        print(f"📁 Dossier '{dossier}' créé — ajoutez vos PDFs dedans")
+        return 0, 0
+
+    search_client = SearchClient(SEARCH_ENDPOINT, index_name, credential)
+    docs = []
+    fichiers = [f for f in os.listdir(dossier) if f.endswith(".pdf")]
+
+    if not fichiers:
+        print(f"⚠️ Aucun PDF trouvé dans '{dossier}'")
+        return 0, 0
+
+    for fichier in fichiers:
+        print(f"📄 Traitement : {fichier}")
+        reader = PdfReader(f"{dossier}/{fichier}")
+        for num_page, page in enumerate(reader.pages):
+            texte = page.extract_text()
+            if not texte:
+                continue
+            for chunk in chunker(texte):
+                docs.append({
+                    "id"       : str(uuid.uuid4()),
+                    "contenu"  : chunk,
+                    "fichier"  : fichier,
+                    "page"     : num_page + 1,
+                    "agent"    : nom_agent,
+                    "embedding": get_embedding(openai_client, chunk)
+                })
+
+    search_client.upload_documents(docs)
+    print(f"✅ {len(docs)} chunks indexés pour '{nom_agent}' !")
+    return len(docs), len(fichiers)
+
+def tester_performance_ragas(openai_client, credential, index_name, questions_test):
+    """Teste la performance du RAG avec RAGAS"""
+    try:
+        from ragas import evaluate
+        from ragas.metrics import faithfulness, answer_relevancy, context_precision, context_recall
+        from datasets import Dataset
+        from backend.utils.rag import rag_query
+
+        questions     = []
+        answers       = []
+        contexts      = []
+        ground_truths = []
+
+        for item in questions_test:
+            resultats = rag_query(credential, openai_client, item["question"], index_name)
+            questions.append(item["question"])
+            answers.append(item.get("reponse", ""))
+            contexts.append([r["contenu"] for r in resultats])
+            ground_truths.append(item["ground_truth"])
+
+        dataset = Dataset.from_dict({
+            "question"    : questions,
+            "answer"      : answers,
+            "contexts"    : contexts,
+            "ground_truth": ground_truths
+        })
+
+        results = evaluate(dataset, metrics=[
+            faithfulness, answer_relevancy, context_precision, context_recall
+        ])
+        print("📊 Résultats RAGAS :", results)
+        return results
+
+    except ImportError:
+        print("⚠️ RAGAS non installé : pip install ragas datasets")
+        return None
+
+if __name__ == "__main__":
+    credential    = get_credential()
+    openai_client = get_openai_client()
+
+    agents = [
+        (INDEX_POLITIQUES, DOSSIER_POLITIQUES, "politiques"),
+        (INDEX_STOCKS,     DOSSIER_STOCKS,     "stocks"),
+        (INDEX_COMMANDES,  DOSSIER_COMMANDES,  "commandes"),
+        (INDEX_CLIENTS,    DOSSIER_CLIENTS,    "clients"),
+    ]
+
+    for index_name, dossier, nom_agent in agents:
+        print(f"\n{'='*50}\nAgent : {nom_agent.upper()}")
+        if index_existe(credential, index_name):
+            print(f"⏭️  Index '{index_name}' existe déjà — ignoré")
+        else:
+            creer_index(credential, index_name)
+            indexer_pdfs(credential, openai_client, dossier, index_name, nom_agent)
+
+    print("\n✅ Indexation terminée !")
+
+================================================================================
+FICHIER 5 : backend/utils/rag.py
+================================================================================
+
+from azure.search.documents import SearchClient
+from backend.config.settings import SEARCH_ENDPOINT, EMBEDDING_MODEL, TOP_K_RESULTS
+
+def get_embedding(openai_client, texte):
+    """Transforme un texte en vecteur numérique"""
+    response = openai_client.embeddings.create(
+        input=texte,
+        model=EMBEDDING_MODEL
+    )
+    return response.data[0].embedding
+
+def rag_query(credential, openai_client, question, index_name, nb_resultats=TOP_K_RESULTS):
+    """Cherche les passages pertinents dans Azure AI Search"""
+    question_embedding = get_embedding(openai_client, question)
+    search_client = SearchClient(SEARCH_ENDPOINT, index_name, credential)
+    resultats = list(search_client.search(
+        search_text=question,
+        vector_queries=[{
+            "vector": question_embedding,
+            "fields": "embedding",
+            "k"     : nb_resultats,
+            "kind"  : "vector"
+        }]
+    ))
+    return [
+        {"contenu": r["contenu"], "fichier": r["fichier"], "page": r["page"]}
+        for r in resultats
+    ]
+
+def appel_gpt(openai_client, system_prompt, question, contexte, deployment):
+    """Appelle GPT avec le contexte trouvé par le RAG"""
+    response = openai_client.chat.completions.create(
+        model=deployment,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": f"Documents:\n{contexte}\n\nQuestion: {question}"}
+        ],
+        max_tokens=800,
+        temperature=0.3,
+    )
+    return response.choices[0].message.content, response.usage.total_tokens
+
+================================================================================
+FICHIER 6 : backend/agents/agents.py
+================================================================================
+
+import pandas as pd
+import json
+from datetime import datetime
+from backend.utils.rag import rag_query, appel_gpt
+from backend.config.settings import (
+    AZURE_OPENAI_DEPLOYMENT,
+    INDEX_POLITIQUES, INDEX_STOCKS, INDEX_COMMANDES, INDEX_CLIENTS,
+    DOSSIER_STOCKS, DOSSIER_COMMANDES, DOSSIER_CLIENTS,
+    COLONNES_STOCKS, COLONNES_COMMANDES, COLONNES_CLIENTS,
+    SEUIL_STOCK_BAS, SEUIL_STOCK_CRITIQUE, TOP_K_RESULTS
+)
+
+def agent_politiques(credential, openai_client, question):
+    """Agent : Politiques de ventes (leasing, financement, garanties...)"""
+    system_prompt = """
+    Tu es un expert en politiques de ventes automobiles chez AutoPlus.
+    Tu réponds aux questions sur le leasing, financement, garanties,
+    remises, promotions et conditions générales de vente.
+    Réponds UNIQUEMENT basé sur les documents fournis.
+    Cite toujours la source (nom du document).
+    """
+    resultats = rag_query(credential, openai_client, question, INDEX_POLITIQUES)
+    if not resultats:
+        return "Aucune politique trouvée pour cette question.", [], 0
+    contexte = "\n\n".join([f"[{r['fichier']} - page {r['page']}]\n{r['contenu']}" for r in resultats])
+    reponse, tokens = appel_gpt(openai_client, system_prompt, question, contexte, AZURE_OPENAI_DEPLOYMENT)
+    return reponse, resultats, tokens
+
+def agent_stocks(credential, openai_client, question):
+    """Agent : Stocks et pièces — génère des alertes automatiques"""
+    import os
+    alertes = []
+    donnees = []
+
+    fichier_stocks = f"{DOSSIER_STOCKS}/stocks.xlsx"
+    if os.path.exists(fichier_stocks):
+        df  = pd.read_excel(fichier_stocks)
+        col = COLONNES_STOCKS
+        for _, row in df.iterrows():
+            try:
+                quantite    = int(row[col["quantite"]])
+                nom_piece   = row[col["nom"]]
+                fournisseur = row.get(col["fournisseur"], "N/A")
+
+                if quantite < SEUIL_STOCK_CRITIQUE:
+                    alertes.append({"type": "CRITIQUE",  "message": f"🔴 Stock CRITIQUE : {nom_piece} — {quantite} unités", "piece": nom_piece, "quantite": quantite, "fournisseur": fournisseur})
+                elif quantite < SEUIL_STOCK_BAS:
+                    alertes.append({"type": "ATTENTION", "message": f"🟡 Stock bas : {nom_piece} — {quantite} unités",     "piece": nom_piece, "quantite": quantite, "fournisseur": fournisseur})
+
+                date_livraison = row.get(col["date_livraison"])
+                if pd.notna(date_livraison):
+                    if isinstance(date_livraison, str):
+                        date_livraison = datetime.strptime(date_livraison, "%Y-%m-%d")
+                    if date_livraison < datetime.now() and quantite < int(row[col["seuil_minimum"]]):
+                        alertes.append({"type": "RETARD", "message": f"⏰ Retard livraison : {nom_piece} — prévu le {date_livraison.strftime('%d/%m/%Y')}", "piece": nom_piece, "quantite": quantite, "fournisseur": fournisseur})
+
+                donnees.append({"piece": nom_piece, "quantite": quantite, "fournisseur": fournisseur})
+            except Exception:
+                continue
+
+    system_prompt = """
+    Tu es un gestionnaire de stocks automobile chez AutoPlus.
+    Réponds aux questions sur les stocks, pièces disponibles,
+    délais de livraison et alertes de rupture.
+    Sois précis avec les chiffres et les dates.
+    """
+    resultats_rag    = rag_query(credential, openai_client, question, INDEX_STOCKS)
+    contexte_stocks  = json.dumps(donnees[:20], ensure_ascii=False) if donnees else "Aucune donnée"
+    contexte_rag     = "\n\n".join([f"[{r['fichier']}]\n{r['contenu']}" for r in resultats_rag])
+    contexte_complet = f"DONNÉES STOCKS:\n{contexte_stocks}\n\nDOCUMENTS:\n{contexte_rag}"
+    reponse, tokens  = appel_gpt(openai_client, system_prompt, question, contexte_complet, AZURE_OPENAI_DEPLOYMENT)
+    return reponse, alertes, donnees, tokens
+
+def agent_commandes(credential, openai_client, question):
+    """Agent : Commandes — suivi, statuts, historique"""
+    import os
+    donnees_commandes = []
+
+    fichier_commandes = f"{DOSSIER_COMMANDES}/commandes.xlsx"
+    if os.path.exists(fichier_commandes):
+        df  = pd.read_excel(fichier_commandes)
+        col = COLONNES_COMMANDES
+        for _, row in df.iterrows():
+            try:
+                donnees_commandes.append({
+                    "commande_id": str(row[col["commande_id"]]),
+                    "client"     : row[col["client_nom"]],
+                    "voiture"    : row[col["voiture_modele"]],
+                    "statut"     : row[col["statut"]],
+                    "montant"    : float(row[col["montant"]]),
+                    "vendeur"    : row[col["vendeur"]],
+                    "date"       : str(row[col["date_commande"]])
+                })
+            except Exception:
+                continue
+
+    system_prompt = """
+    Tu es un agent de suivi des commandes chez AutoPlus.
+    Réponds aux questions sur le statut des commandes,
+    délais de livraison, historique et performances des vendeurs.
+    """
+    resultats_rag    = rag_query(credential, openai_client, question, INDEX_COMMANDES)
+    contexte_cmd     = json.dumps(donnees_commandes[:20], ensure_ascii=False) if donnees_commandes else "Aucune commande"
+    contexte_rag     = "\n\n".join([f"[{r['fichier']}]\n{r['contenu']}" for r in resultats_rag])
+    contexte_complet = f"COMMANDES:\n{contexte_cmd}\n\nDOCUMENTS:\n{contexte_rag}"
+    reponse, tokens  = appel_gpt(openai_client, system_prompt, question, contexte_complet, AZURE_OPENAI_DEPLOYMENT)
+    return reponse, donnees_commandes, tokens
+
+def agent_fidelisation(credential, openai_client, question):
+    """Agent : Fidélisation clients — analyse, recommandations, niveaux"""
+    import os
+    donnees_clients = []
+
+    fichier_clients = f"{DOSSIER_CLIENTS}/clients.xlsx"
+    if os.path.exists(fichier_clients):
+        df  = pd.read_excel(fichier_clients)
+        col = COLONNES_CLIENTS
+        for _, row in df.iterrows():
+            try:
+                donnees_clients.append({
+                    "client_id"    : str(row[col["client_id"]]),
+                    "nom"          : row[col["nom"]],
+                    "email"        : row[col["email"]],
+                    "achats"       : int(row[col["achats_total"]]),
+                    "valeur_totale": float(row[col["valeur_total"]]),
+                    "derniere_visite": str(row[col["derniere_visite"]]),
+                    "niveau"       : row[col["niveau_fidelite"]]
+                })
+            except Exception:
+                continue
+
+    system_prompt = """
+    Tu es un expert en fidélisation client chez AutoPlus.
+    Tu identifies les clients VIP et à risque,
+    suggères des actions de rétention et offres personnalisées.
+    Sois proactif et orienté action dans tes recommandations.
+    """
+    resultats_rag    = rag_query(credential, openai_client, question, INDEX_CLIENTS)
+    contexte_clients = json.dumps(donnees_clients[:20], ensure_ascii=False) if donnees_clients else "Aucun client"
+    contexte_rag     = "\n\n".join([f"[{r['fichier']}]\n{r['contenu']}" for r in resultats_rag])
+    contexte_complet = f"CLIENTS:\n{contexte_clients}\n\nDOCUMENTS:\n{contexte_rag}"
+    reponse, tokens  = appel_gpt(openai_client, system_prompt, question, contexte_complet, AZURE_OPENAI_DEPLOYMENT)
+    return reponse, donnees_clients, tokens
+
+================================================================================
+FICHIER 7 : backend/orchestrateur.py
+================================================================================
+
+from backend.agents.agents import agent_politiques, agent_stocks, agent_commandes, agent_fidelisation
+
+# Mots clés par agent — modifiez selon vos besoins
+MOTS_CLES_AGENTS = {
+    "politiques": ["leasing","financement","garantie","remise","promotion","prix","politique","condition","vente","contrat","paiement","mensualité","acompte","intérêt","assurance","taux"],
+    "stocks"    : ["stock","pièce","disponible","inventaire","livraison","rupture","alerte","quantité","fournisseur","délai"],
+    "commandes" : ["commande","suivi","statut","livrer","vendeur","historique","confirmé","annulé","facture"],
+    "clients"   : ["client","fidélité","fidélisation","vip","historique client","recommandation","promotion client","rétention","satisfaction"]
+}
+
+def detecter_agent(question):
+    """Détecte automatiquement le bon agent selon la question"""
+    question_lower = question.lower()
+    scores = {"politiques": 0, "stocks": 0, "commandes": 0, "clients": 0}
+    for agent, mots in MOTS_CLES_AGENTS.items():
+        for mot in mots:
+            if mot in question_lower:
+                scores[agent] += 1
+    agent_choisi = max(scores, key=scores.get)
+    return "politiques" if scores[agent_choisi] == 0 else agent_choisi
+
+def orchestrer(credential, openai_client, question, agent_force=None):
+    """Route la question vers le bon agent"""
+    agent    = agent_force if agent_force else detecter_agent(question)
+    resultat = {"agent": agent, "reponse": "", "sources": [], "tokens": 0, "alertes": [], "donnees": []}
+
+    if agent == "politiques":
+        reponse, sources, tokens = agent_politiques(credential, openai_client, question)
+        resultat.update({"reponse": reponse, "sources": sources, "tokens": tokens})
+    elif agent == "stocks":
+        reponse, alertes, donnees, tokens = agent_stocks(credential, openai_client, question)
+        resultat.update({"reponse": reponse, "alertes": alertes, "donnees": donnees, "tokens": tokens})
+    elif agent == "commandes":
+        reponse, donnees, tokens = agent_commandes(credential, openai_client, question)
+        resultat.update({"reponse": reponse, "donnees": donnees, "tokens": tokens})
+    elif agent == "clients":
+        reponse, donnees, tokens = agent_fidelisation(credential, openai_client, question)
+        resultat.update({"reponse": reponse, "donnees": donnees, "tokens": tokens})
+
+    return resultat
+
+================================================================================
+FICHIER 8 : backend/utils/export.py
+================================================================================
+
+import os
+from datetime import datetime
+from backend.config.settings import COMPANY_NAME
+
+def exporter_pdf(titre, contenu, nom_fichier=None):
+    """Exporte en PDF — nécessite : pip install reportlab"""
+    try:
+        from reportlab.lib.pagesizes import letter
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.colors import HexColor
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+        from reportlab.lib.units import inch
+
+        if not nom_fichier:
+            nom_fichier = f"exports/rapport_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+        os.makedirs("exports", exist_ok=True)
+
+        doc    = SimpleDocTemplate(nom_fichier, pagesize=letter)
+        styles = getSampleStyleSheet()
+        style_titre = ParagraphStyle('Titre', parent=styles['Heading1'], fontSize=18, textColor=HexColor('#1a5c1a'), spaceAfter=20)
+        style_corps = ParagraphStyle('Corps', parent=styles['Normal'], fontSize=11, spaceAfter=10, leading=16)
+        style_pied  = ParagraphStyle('Pied',  parent=styles['Normal'], fontSize=9,  textColor=HexColor('#888888'))
+
+        elements = []
+        elements.append(Paragraph(f"{COMPANY_NAME} — {titre}", style_titre))
+        elements.append(Spacer(1, 0.2*inch))
+        elements.append(Paragraph(f"Généré le : {datetime.now().strftime('%d/%m/%Y %H:%M')}", style_pied))
+        elements.append(Spacer(1, 0.3*inch))
+        for ligne in contenu.split('\n'):
+            if ligne.strip():
+                elements.append(Paragraph(ligne.replace('<','&lt;').replace('>','&gt;'), style_corps))
+        doc.build(elements)
+        return nom_fichier
+    except ImportError:
+        return None
+
+def exporter_powerpoint(titre, sections, nom_fichier=None):
+    """Exporte en PowerPoint — nécessite : pip install python-pptx"""
+    try:
+        from pptx import Presentation
+        from pptx.util import Pt
+        from pptx.dml.color import RGBColor
+
+        if not nom_fichier:
+            nom_fichier = f"exports/rapport_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pptx"
+        os.makedirs("exports", exist_ok=True)
+
+        prs   = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[0])
+        slide.shapes.title.text = COMPANY_NAME
+        slide.placeholders[1].text = titre
+        slide.shapes.title.text_frame.paragraphs[0].runs[0].font.color.rgb = RGBColor(0x1a, 0x5c, 0x1a)
+
+        for section in sections:
+            slide = prs.slides.add_slide(prs.slide_layouts[1])
+            slide.shapes.title.text = section["titre"]
+            slide.placeholders[1].text_frame.text = section["contenu"][:500]
+
+        slide = prs.slides.add_slide(prs.slide_layouts[0])
+        slide.shapes.title.text = "Merci"
+        slide.placeholders[1].text = f"Généré par {COMPANY_NAME} IA — {datetime.now().strftime('%d/%m/%Y')}"
+        prs.save(nom_fichier)
+        return nom_fichier
+    except ImportError:
+        return None
+
+def exporter_image(titre, contenu, nom_fichier=None):
+    """Exporte en image PNG — nécessite : pip install Pillow"""
+    try:
+        from PIL import Image, ImageDraw
+
+        if not nom_fichier:
+            nom_fichier = f"exports/rapport_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+        os.makedirs("exports", exist_ok=True)
+
+        lignes  = contenu.split('\n')
+        hauteur = max(400, 120 + len(lignes) * 22)
+        img     = Image.new('RGB', (900, hauteur), color='#0a1f0a')
+        draw    = ImageDraw.Draw(img)
+        draw.rectangle([0, 0, 900, 70], fill='#122612')
+        draw.text((20, 15), f"{COMPANY_NAME} — {titre}", fill='#39ff14')
+        draw.text((20, 45), f"Généré le {datetime.now().strftime('%d/%m/%Y %H:%M')}", fill='#5ec45e')
+        y = 90
+        for ligne in lignes:
+            if ligne.strip():
+                draw.text((20, y), ligne[:100], fill='#c2f0c2')
+                y += 22
+        img.save(nom_fichier)
+        return nom_fichier
+    except ImportError:
+        return None
+
+================================================================================
+FICHIER 9 : frontend/styles/theme.py
+================================================================================
+
+CSS = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Syne:wght@400;700;800&display=swap');
+
+html, body, [class*="css"] {
+    font-family: 'Syne', sans-serif;
+    background-color: #0a1a0a !important;
+    color: #c2f0c2 !important;
+}
+section[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #0d200d, #112211) !important;
+    border-right: 1px solid #2a6e2a;
+}
+.app-header {
+    background: linear-gradient(135deg, #0d200d, #1a3a1a);
+    border: 1px solid #2a6e2a;
+    border-radius: 16px;
+    padding: 1.5rem 2rem;
+    margin-bottom: 1.2rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+.app-header h1 { font-family:'Syne',sans-serif; font-size:1.8rem; font-weight:800; color:#39ff14; margin:0; }
+.app-header p  { font-size:0.85rem; color:#5ec45e; margin:4px 0 0 0; font-family:'JetBrains Mono',monospace; }
+.status-bar {
+    background: #0d200d; border: 1px solid #1e4a1e; border-radius: 8px;
+    padding: 0.5rem 1rem; margin-bottom: 1rem; display: flex; gap: 2rem;
+    font-family: 'JetBrains Mono', monospace; font-size: 0.72rem; color: #5ec45e; flex-wrap: wrap;
+}
+.pulse { display:inline-block; width:8px; height:8px; border-radius:50%; background:#39ff14; margin-right:5px; animation:pulse 2s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.2} }
+.alerte-critique { background:#1a0000; border:1px solid #c83232; border-left:4px solid #c83232; border-radius:8px; padding:0.6rem 1rem; margin:0.3rem 0; font-family:'JetBrains Mono',monospace; font-size:0.82rem; color:#e88080; }
+.alerte-attention{ background:#1a1400; border:1px solid #c8a000; border-left:4px solid #c8a000; border-radius:8px; padding:0.6rem 1rem; margin:0.3rem 0; font-family:'JetBrains Mono',monospace; font-size:0.82rem; color:#e8d44d; }
+.alerte-retard   { background:#0a0a1a; border:1px solid #5050c8; border-left:4px solid #5050c8; border-radius:8px; padding:0.6rem 1rem; margin:0.3rem 0; font-family:'JetBrains Mono',monospace; font-size:0.82rem; color:#9090e8; }
+.chat-user  { background:#173417; border:1px solid #2a6e2a; border-radius:16px 16px 4px 16px; padding:0.9rem 1.1rem; margin:0.6rem 0; margin-left:20%; font-size:0.92rem; }
+.chat-agent { background:#0d200d; border:1px solid #1e4a1e; border-radius:16px 16px 16px 4px; padding:0.9rem 1.1rem; margin:0.6rem 0; margin-right:20%; font-size:0.92rem; font-family:'JetBrains Mono',monospace; line-height:1.7; }
+.chat-label { font-size:0.68rem; color:#3d9c3d; margin-bottom:5px; font-family:'JetBrains Mono',monospace; text-transform:uppercase; letter-spacing:1.5px; }
+.chat-agent-badge { display:inline-block; padding:2px 8px; border-radius:12px; font-size:0.65rem; font-family:'JetBrains Mono',monospace; margin-left:6px; }
+.badge-politiques { background:#0d2a1a; color:#5ec45e; border:1px solid #2a6e2a; }
+.badge-stocks     { background:#1a0000; color:#e88080; border:1px solid #c83232; }
+.badge-commandes  { background:#0a0a1a; color:#9090e8; border:1px solid #5050c8; }
+.badge-clients    { background:#1a1400; color:#e8d44d; border:1px solid #c8a000; }
+.source-badge { display:inline-block; background:#0d2a1a; border:1px solid #2a6e2a; border-radius:20px; padding:2px 10px; font-size:0.68rem; font-family:'JetBrains Mono',monospace; color:#5ec45e; margin:2px; }
+.metric-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-bottom:1.2rem; }
+.metric-card  { background:#0d200d; border:1px solid #1e4a1e; border-radius:12px; padding:1rem; text-align:center; }
+.metric-value { font-family:'JetBrains Mono',monospace; font-size:1.6rem; color:#39ff14; font-weight:600; line-height:1; }
+.metric-label { font-size:0.68rem; color:#3d9c3d; text-transform:uppercase; letter-spacing:0.8px; margin-top:4px; }
+.notif       { border-radius:8px; padding:0.6rem 1rem; margin-bottom:0.5rem; font-size:0.82rem; font-family:'JetBrains Mono',monospace; border-left:4px solid; }
+.notif-info  { background:#0d2a1a; border-color:#3d9c3d; color:#8fe08f; }
+.notif-warn  { background:#1a1400; border-color:#c8a000; color:#e8d44d; }
+.notif-error { background:#1a0000; border-color:#c83232; color:#e88080; }
+.stTextInput input, .stTextArea textarea { background-color:#0d200d !important; border:1px solid #2a6e2a !important; color:#c2f0c2 !important; border-radius:10px !important; font-family:'JetBrains Mono',monospace !important; }
+.stButton button { background:#1e4a1e !important; color:#c2f0c2 !important; border:1px solid #3d9c3d !important; border-radius:10px !important; font-family:'Syne',sans-serif !important; font-weight:600 !important; }
+.stButton button:hover { background:#2a6e2a !important; border-color:#39ff14 !important; color:#39ff14 !important; }
+.stTabs [data-baseweb="tab-list"] { background-color:#0d200d !important; border-radius:10px; padding:4px; }
+.stTabs [data-baseweb="tab"] { color:#5ec45e !important; font-family:'Syne',sans-serif !important; font-weight:600 !important; }
+.stTabs [aria-selected="true"] { background-color:#1e4a1e !important; color:#39ff14 !important; border-radius:8px !important; }
+hr { border-color:#1e4a1e !important; }
+::-webkit-scrollbar { width:6px; }
+::-webkit-scrollbar-track { background:#0a1a0a; }
+::-webkit-scrollbar-thumb { background:#2a6e2a; border-radius:3px; }
+</style>
+"""
+
+================================================================================
+FICHIER 10 : frontend/components/html_blocks.py
+================================================================================
+
+from backend.config.settings import COMPANY_NAME, COMPANY_SLOGAN
+
+def header(nb_alertes=0):
+    badge = f'<span style="background:#c83232;color:white;border-radius:20px;padding:2px 8px;font-size:0.7rem;margin-left:10px">🔴 {nb_alertes} alertes</span>' if nb_alertes > 0 else ""
+    return f"""
+    <div class="app-header">
+        <div><h1>🚗 {COMPANY_NAME} {badge}</h1><p>{COMPANY_SLOGAN} · Système Multi-Agents IA</p></div>
+        <div style="font-size:3rem">🤖</div>
+    </div>
+    """
+
+def status_bar(agents_actifs, tokens_total, nb_questions):
+    dot = '<span class="pulse"></span>'
+    return f"""
+    <div class="status-bar">
+        <span>{dot}Azure OpenAI GPT-4.5</span>
+        <span>🔍 Azure AI Search</span>
+        <span>🤖 {agents_actifs}/4 agents actifs</span>
+        <span>📊 {tokens_total:,} tokens utilisés</span>
+        <span>💬 {nb_questions} questions posées</span>
+    </div>
+    """
+
+def metrics(nb_commandes, nb_alertes, nb_clients, nb_questions):
+    couleur_alerte = '#c83232' if nb_alertes > 0 else '#39ff14'
+    return f"""
+    <div class="metric-grid">
+        <div class="metric-card"><div class="metric-value">{nb_commandes}</div><div class="metric-label">Commandes actives</div></div>
+        <div class="metric-card"><div class="metric-value" style="color:{couleur_alerte}">{nb_alertes}</div><div class="metric-label">Alertes stocks</div></div>
+        <div class="metric-card"><div class="metric-value">{nb_clients}</div><div class="metric-label">Clients actifs</div></div>
+        <div class="metric-card"><div class="metric-value">{nb_questions}</div><div class="metric-label">Questions posées</div></div>
+    </div>
+    """
+
+def notification(msg, kind="info"):
+    icons = {"info":"ℹ","warn":"⚠","error":"✖","success":"✅"}
+    return f'<div class="notif notif-{kind}">{icons.get(kind,"ℹ")} {msg}</div>'
+
+def chat_user(contenu):
+    return f'<div class="chat-label">Vous</div><div class="chat-user">{contenu}</div>'
+
+def chat_agent(contenu, agent, sources=None, tokens=None):
+    noms   = {"politiques":"Agent Politiques","stocks":"Agent Stocks","commandes":"Agent Commandes","clients":"Agent Fidélisation"}
+    icones = {"politiques":"📋","stocks":"📦","commandes":"🚗","clients":"⭐"}
+    nom    = noms.get(agent, "Agent IA")
+    icone  = icones.get(agent, "🤖")
+    badge  = f'<span class="chat-agent-badge badge-{agent}">{icone} {nom}</span>'
+    tokens_html  = f'<span class="source-badge">~{tokens} tokens</span>' if tokens else ""
+    sources_html = "".join([f'<span class="source-badge">📄 {s["fichier"]} p.{s["page"]}</span>' for s in sources]) if sources else ""
+    return f'<div class="chat-label">{badge} {tokens_html}</div><div class="chat-agent">{contenu}</div><div style="margin-top:5px">{sources_html}</div>'
+
+def alerte_stock(alerte):
+    css = {"CRITIQUE":"alerte-critique","ATTENTION":"alerte-attention","RETARD":"alerte-retard"}.get(alerte.get("type","ATTENTION"),"alerte-attention")
+    return f'<div class="{css}">{alerte["message"]}</div>'
+
+def sidebar_agents_info():
+    return """
+    <div style="font-size:0.72rem; color:#5ec45e; font-family:'JetBrains Mono',monospace; line-height:1.8;">
+    <b style="color:#39ff14">4 Agents IA :</b><br>
+    📋 Politiques de ventes<br>
+    📦 Stocks & pièces<br>
+    🚗 Commandes<br>
+    ⭐ Fidélisation clients<br><br>
+    <b style="color:#39ff14">Stack :</b><br>
+    🔐 Azure Identity<br>
+    🤖 GPT-4.5<br>
+    🔍 Azure AI Search<br>
+    📊 RAGAS Evaluation
+    </div>
+    """
+
+================================================================================
+FICHIER 11 : app.py
+================================================================================
+
+import streamlit as st
+import pandas as pd
+import time
+import os
+import json
+
+from backend.config.settings   import get_credential, get_openai_client
+from backend.orchestrateur     import orchestrer, detecter_agent
+from backend.indexer           import index_existe, creer_index, indexer_pdfs
+from backend.utils.export      import exporter_pdf, exporter_powerpoint, exporter_image
+from frontend.styles.theme     import CSS
+from frontend.components.html_blocks import (
+    header, status_bar, metrics, notification,
+    chat_user, chat_agent, alerte_stock, sidebar_agents_info
+)
+from backend.config.settings import (
+    INDEX_POLITIQUES, INDEX_STOCKS, INDEX_COMMANDES, INDEX_CLIENTS,
+    DOSSIER_POLITIQUES, DOSSIER_STOCKS, DOSSIER_COMMANDES, DOSSIER_CLIENTS
+)
+
+st.set_page_config(page_title="AutoPlus IA", page_icon="🚗", layout="wide", initial_sidebar_state="expanded")
+st.markdown(CSS, unsafe_allow_html=True)
+
+@st.cache_resource
+def load_clients():
+    try:
+        return get_credential(), get_openai_client()
+    except Exception as e:
+        st.error(f"❌ Erreur connexion Azure : {e}")
+        st.stop()
+
+credential, openai_client = load_clients()
+
+def init_state():
+    defaults = {
+        "messages"      : [],
+        "total_tokens"  : 0,
+        "nb_questions"  : 0,
+        "notifications" : [],
+        "alertes_stocks": [],
+        "agent_actif"   : "politiques",
+        "index_status"  : {},
+        "auto_detect"   : True,
+    }
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+init_state()
+
+@st.cache_data(ttl=300)
+def verifier_index(_credential):
+    return {
+        "politiques": index_existe(_credential, INDEX_POLITIQUES),
+        "stocks"    : index_existe(_credential, INDEX_STOCKS),
+        "commandes" : index_existe(_credential, INDEX_COMMANDES),
+        "clients"   : index_existe(_credential, INDEX_CLIENTS),
+    }
+
+st.session_state.index_status = verifier_index(credential)
+
+def add_notif(msg, kind="info"):
+    st.session_state.notifications.append({"msg": msg, "kind": kind})
+    if len(st.session_state.notifications) > 3:
+        st.session_state.notifications.pop(0)
+
+def compter_donnees_excel(dossier, fichier):
+    chemin = f"{dossier}/{fichier}"
+    if os.path.exists(chemin):
+        try: return len(pd.read_excel(chemin))
+        except: return 0
+    return 0
+
+# ── SIDEBAR ────────────────────────────────────────────────────────
+with st.sidebar:
+    st.markdown("### 🚗 AutoPlus IA")
+    st.markdown("---")
+    st.markdown("### 🤖 Agent actif")
+
+    auto = st.toggle("Détection automatique", value=True)
+    st.session_state.auto_detect = auto
+
+    if not auto:
+        agent_choix = st.radio("Choisir l'agent", ["politiques","stocks","commandes","clients"],
+            format_func=lambda x: {"politiques":"📋 Politiques","stocks":"📦 Stocks","commandes":"🚗 Commandes","clients":"⭐ Fidélisation"}[x])
+        st.session_state.agent_actif = agent_choix
+
+    st.markdown("---")
+    st.markdown("### 📊 Statut des index")
+    for agent, actif in st.session_state.index_status.items():
+        st.markdown(f"{'✅' if actif else '❌'} {agent.capitalize()}")
+
+    st.markdown("---")
+    st.markdown("### ⚡ Indexation")
+    agent_a_indexer = st.selectbox("Agent à indexer", ["politiques","stocks","commandes","clients"])
+    config_agents   = {
+        "politiques": (INDEX_POLITIQUES, DOSSIER_POLITIQUES),
+        "stocks"    : (INDEX_STOCKS,     DOSSIER_STOCKS),
+        "commandes" : (INDEX_COMMANDES,  DOSSIER_COMMANDES),
+        "clients"   : (INDEX_CLIENTS,    DOSSIER_CLIENTS),
+    }
+    index_name, dossier = config_agents[agent_a_indexer]
+    deja_indexe = st.session_state.index_status.get(agent_a_indexer, False)
+
+    if deja_indexe:
+        st.success(f"✅ Index '{agent_a_indexer}' déjà créé")
+        forcer = st.checkbox("Forcer la re-indexation")
+    else:
+        forcer = False
+
+    if st.button("⚡ Indexer"):
+        if deja_indexe and not forcer:
+            add_notif(f"Index déjà existant. Cochez 'Forcer' pour re-indexer.", "warn")
+        else:
+            with st.spinner(f"Indexation {agent_a_indexer}..."):
+                try:
+                    creer_index(credential, index_name)
+                    chunks, fichiers = indexer_pdfs(credential, openai_client, dossier, index_name, agent_a_indexer)
+                    add_notif(f"✅ {fichiers} PDF · {chunks} chunks indexés", "success")
+                    st.cache_data.clear()
+                except Exception as e:
+                    add_notif(f"Erreur : {str(e)}", "error")
+        st.rerun()
+
+    st.markdown("---")
+    if st.button("🗑️ Effacer conversation"):
+        st.session_state.messages     = []
+        st.session_state.total_tokens = 0
+        st.session_state.nb_questions = 0
+        st.session_state.notifications = []
+        st.rerun()
+
+    st.markdown("---")
+    st.markdown(sidebar_agents_info(), unsafe_allow_html=True)
+
+# ── CONTENU PRINCIPAL ──────────────────────────────────────────────
+nb_alertes    = len(st.session_state.alertes_stocks)
+agents_actifs = sum(st.session_state.index_status.values())
+
+st.markdown(header(nb_alertes), unsafe_allow_html=True)
+st.markdown(status_bar(agents_actifs, st.session_state.total_tokens, st.session_state.nb_questions), unsafe_allow_html=True)
+
+for notif in st.session_state.notifications:
+    st.markdown(notification(notif["msg"], notif["kind"]), unsafe_allow_html=True)
+
+nb_commandes = compter_donnees_excel(DOSSIER_COMMANDES, "commandes.xlsx")
+nb_clients   = compter_donnees_excel(DOSSIER_CLIENTS,   "clients.xlsx")
+st.markdown(metrics(nb_commandes, nb_alertes, nb_clients, st.session_state.nb_questions), unsafe_allow_html=True)
+
+tab_chat, tab_alertes, tab_donnees, tab_eval, tab_export = st.tabs([
+    "💬 Chat IA", "🔴 Alertes Stocks", "📊 Données", "🧪 Évaluation", "📤 Exporter"
+])
+
+# ── ONGLET CHAT ────────────────────────────────────────────────────
+with tab_chat:
+    for msg in st.session_state.messages:
+        if msg["role"] == "user":
+            st.markdown(chat_user(msg["content"]), unsafe_allow_html=True)
+        else:
+            st.markdown(chat_agent(msg["content"], msg.get("agent","politiques"), msg.get("sources"), msg.get("tokens")), unsafe_allow_html=True)
+
+    st.markdown("---")
+    with st.form("chat_form", clear_on_submit=True):
+        user_input = st.text_area("Question", placeholder="Ex: Quelles sont les conditions de leasing ?", height=80, label_visibility="collapsed")
+        col1, col2 = st.columns([5,1])
+        with col2:
+            submitted = st.form_submit_button("▶ Envoyer")
+
+    if submitted and user_input.strip():
+        agent = detecter_agent(user_input) if st.session_state.auto_detect else st.session_state.agent_actif
+        st.session_state.agent_actif = agent
+        st.session_state.messages.append({"role":"user","content":user_input.strip()})
+        with st.spinner(f"Agent {agent} réfléchit..."):
+            try:
+                start    = time.time()
+                resultat = orchestrer(credential, openai_client, user_input.strip(), agent)
+                elapsed  = round(time.time() - start, 2)
+                if resultat["alertes"]:
+                    st.session_state.alertes_stocks = resultat["alertes"]
+                st.session_state.messages.append({"role":"assistant","content":resultat["reponse"],"agent":resultat["agent"],"sources":resultat["sources"],"tokens":resultat["tokens"]})
+                st.session_state.total_tokens += resultat["tokens"]
+                st.session_state.nb_questions += 1
+                add_notif(f"✅ Agent {agent} · {elapsed}s · {resultat['tokens']} tokens", "info")
+            except Exception as e:
+                add_notif(f"Erreur : {str(e)}", "error")
+                st.session_state.messages.pop()
+        st.rerun()
+
+# ── ONGLET ALERTES ─────────────────────────────────────────────────
+with tab_alertes:
+    st.markdown("### 🔴 Alertes de Stock")
+    if st.button("🔄 Actualiser"):
+        with st.spinner("Analyse..."):
+            r = orchestrer(credential, openai_client, "analyse complète des stocks", "stocks")
+            st.session_state.alertes_stocks = r["alertes"]
+        st.rerun()
+
+    if not st.session_state.alertes_stocks:
+        st.success("✅ Aucune alerte détectée")
+    else:
+        for a in st.session_state.alertes_stocks:
+            st.markdown(alerte_stock(a), unsafe_allow_html=True)
+
+# ── ONGLET DONNÉES ─────────────────────────────────────────────────
+with tab_donnees:
+    st.markdown("### 📊 Données en temps réel")
+    s1, s2, s3 = st.tabs(["📦 Stocks","🚗 Commandes","⭐ Clients"])
+    for sous_tab, dossier, fichier in [(s1, DOSSIER_STOCKS,"stocks.xlsx"), (s2, DOSSIER_COMMANDES,"commandes.xlsx"), (s3, DOSSIER_CLIENTS,"clients.xlsx")]:
+        with sous_tab:
+            chemin = f"{dossier}/{fichier}"
+            if os.path.exists(chemin):
+                st.dataframe(pd.read_excel(chemin), use_container_width=True)
+            else:
+                st.info(f"Ajoutez votre fichier : {chemin}")
+
+# ── ONGLET ÉVALUATION ──────────────────────────────────────────────
+with tab_eval:
+    st.markdown("### 🧪 Évaluation RAG")
+    col1, col2 = st.columns(2)
+    with col1:
+        q1  = st.text_input("Question 1")
+        gt1 = st.text_input("Réponse attendue 1")
+        q2  = st.text_input("Question 2")
+        gt2 = st.text_input("Réponse attendue 2")
+    with col2:
+        agent_eval = st.selectbox("Agent à évaluer", ["politiques","stocks","commandes","clients"])
+        methode    = st.radio("Méthode", ["LLM as a Judge","RAGAS"])
+
+    if st.button("🧪 Lancer l'évaluation"):
+        questions     = [q for q in [q1,q2] if q]
+        ground_truths = [g for g in [gt1,gt2] if g]
+        if not questions:
+            st.warning("Ajoutez au moins une question")
+        else:
+            with st.spinner("Évaluation..."):
+                if methode == "LLM as a Judge":
+                    for question in questions:
+                        r = orchestrer(credential, openai_client, question, agent_eval)
+                        prompt = f"""Évalue cette réponse RAG. Retourne UNIQUEMENT un JSON :
+{{"fidelite":{{"score":0,"commentaire":""}},"pertinence":{{"score":0,"commentaire":""}},"completude":{{"score":0,"commentaire":""}},"verdict":"BON/MOYEN/MAUVAIS","suggestion":""}}
+QUESTION: {question}
+RÉPONSE: {r['reponse']}"""
+                        resp    = openai_client.chat.completions.create(model="gpt-4-5", messages=[{"role":"user","content":prompt}], max_tokens=400, temperature=0)
+                        verdict = json.loads(resp.choices[0].message.content.replace("```json","").replace("```","").strip())
+                        st.markdown(f"**{question}**")
+                        c1,c2,c3 = st.columns(3)
+                        c1.metric("Fidélité",   f"{verdict['fidelite']['score']}/10")
+                        c2.metric("Pertinence", f"{verdict['pertinence']['score']}/10")
+                        c3.metric("Complétude", f"{verdict['completude']['score']}/10")
+                        st.info(f"💡 {verdict['suggestion']}")
+                        st.markdown("---")
+                else:
+                    try:
+                        from ragas import evaluate
+                        from ragas.metrics import faithfulness, answer_relevancy, context_precision, context_recall
+                        from datasets import Dataset
+                        answers  = []
+                        contexts = []
+                        for q in questions:
+                            r = orchestrer(credential, openai_client, q, agent_eval)
+                            answers.append(r["reponse"])
+                            contexts.append([s["contenu"] for s in r["sources"]] if r["sources"] else [""])
+                        results = evaluate(Dataset.from_dict({"question":questions,"answer":answers,"contexts":contexts,"ground_truth":ground_truths[:len(questions)]}), metrics=[faithfulness,answer_relevancy,context_precision,context_recall])
+                        c1,c2,c3,c4 = st.columns(4)
+                        c1.metric("Faithfulness",     f"{results['faithfulness']:.2f}")
+                        c2.metric("Answer Relevancy", f"{results['answer_relevancy']:.2f}")
+                        c3.metric("Context Precision",f"{results['context_precision']:.2f}")
+                        c4.metric("Context Recall",   f"{results['context_recall']:.2f}")
+                    except ImportError:
+                        st.error("pip install ragas datasets")
+
+# ── ONGLET EXPORT ──────────────────────────────────────────────────
+with tab_export:
+    st.markdown("### 📤 Exporter")
+    if not st.session_state.messages:
+        st.info("Posez d'abord des questions dans le Chat.")
+    else:
+        dernier_msg   = next((m for m in reversed(st.session_state.messages) if m["role"]=="assistant"), None)
+        titre_export  = st.text_input("Titre du rapport", value="Rapport AutoPlus IA")
+        format_export = st.radio("Format", ["PDF","PowerPoint","Image PNG"], horizontal=True)
+        if st.button("📤 Exporter"):
+            with st.spinner("Génération..."):
+                try:
+                    contenu = dernier_msg["content"] if dernier_msg else ""
+                    os.makedirs("exports", exist_ok=True)
+                    if format_export == "PDF":
+                        f = exporter_pdf(titre_export, contenu)
+                        if f:
+                            with open(f,"rb") as fp: st.download_button("⬇️ Télécharger PDF", fp, file_name=os.path.basename(f), mime="application/pdf")
+                        else: st.error("pip install reportlab")
+                    elif format_export == "PowerPoint":
+                        sections = [{"titre":f"Réponse {i+1}","contenu":m["content"]} for i,m in enumerate(st.session_state.messages) if m["role"]=="assistant"]
+                        f = exporter_powerpoint(titre_export, sections)
+                        if f:
+                            with open(f,"rb") as fp: st.download_button("⬇️ Télécharger PPTX", fp, file_name=os.path.basename(f), mime="application/vnd.openxmlformats-officedocument.presentationml.presentation")
+                        else: st.error("pip install python-pptx")
+                    elif format_export == "Image PNG":
+                        f = exporter_image(titre_export, contenu)
+                        if f:
+                            with open(f,"rb") as fp: st.download_button("⬇️ Télécharger PNG", fp, file_name=os.path.basename(f), mime="image/png")
+                        else: st.error("pip install Pillow")
+                except Exception as e:
+                    st.error(f"Erreur export : {str(e)}")
+
+================================================================================
+FICHIER 12 : COLONNES_EXCEL.txt
+================================================================================
+
+FICHIER 1 : data/stocks/stocks.xlsx
+ID_Piece | Nom_Piece | Quantite | Seuil_Minimum | Date_Livraison_Prevue | Fournisseur | Modele_Voiture
+
+FICHIER 2 : data/commandes/commandes.xlsx
+ID_Commande | Nom_Client | Modele_Voiture | Date_Commande | Statut | Montant_Total | Vendeur
+
+FICHIER 3 : data/clients/clients.xlsx
+ID_Client | Nom_Client | Email | Telephone | Nombre_Achats | Valeur_Totale | Derniere_Visite | Niveau_Fidelite
+
+DOSSIERS PDF :
+data/politiques/ → PDFs politiques de vente, leasing, financement
+data/stocks/     → PDFs procédures stocks
+data/commandes/  → PDFs procédures commandes
+data/clients/    → PDFs programmes fidélité
+
+================================================================================
+FICHIERS __init__.py — créer ces fichiers vides
+================================================================================
+
+Créez ces fichiers vides dans votre projet :
+- backend/__init__.py
+- backend/config/__init__.py
+- backend/agents/__init__.py
+- backend/utils/__init__.py
+- frontend/__init__.py
+- frontend/styles/__init__.py
+- frontend/components/__init__.py
+
+Contenu de chaque fichier : laisser vide ou mettre # init
+
+================================================================================
+FIN DU FICHIER
+================================================================================
