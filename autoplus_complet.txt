@@ -38,7 +38,7 @@ FICHIER 1 : .env
 AZURE_OPENAI_ENDPOINT=https://TON-NOM.openai.azure.com/
 AZURE_OPENAI_DEPLOYMENT=gpt-4-5
 EMBEDDING_MODEL=text-embedding-ada-002
-AZURE_SEARCH_ENDPOINT=https://srch-team13.search.windows.net
+AZURE_SEARCH_ENDPOINT=https://..............
 
 ================================================================================
 FICHIER 2 : requirements.txt
