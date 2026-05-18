@@ -1314,3 +1314,1136 @@ data/clients/    → PDFs programmes fidelite
 ================================================================================
 FIN DU FICHIER
 ================================================================================
+================================================================================
+AUTOPLUS V2 — NOUVELLES PAGES (STYLE SWIFTBOX)
+================================================================================
+Seulement les 3 nouveaux fichiers a creer/remplacer.
+Tous les autres fichiers du projet restent identiques.
+ 
+Structure :
+autoplus_v2/
+├── app.py                        ← REMPLACER (redirection multi-pages)
+└── pages/                        ← NOUVEAU DOSSIER a creer
+    ├── 1_Dashboard.py            ← NOUVEAU
+    └── 2_Evaluation_et_Index.py  ← NOUVEAU
+ 
+Pour lancer :
+    streamlit run app.py
+ 
+Streamlit detecte automatiquement le dossier pages/ et cree la navigation.
+ 
+================================================================================
+FICHIER 1 : app.py  (remplace l'ancien)
+================================================================================
+ 
+import streamlit as st
+ 
+st.set_page_config(page_title="AutoPlus IA", page_icon="🚗", layout="wide")
+st.switch_page("pages/1_Dashboard.py")
+ 
+================================================================================
+FICHIER 2 : pages/1_Dashboard.py
+================================================================================
+ 
+# ==============================================================================
+# FICHIER : pages/1_Dashboard.py
+# ROLE    : Page principale — Chat IA + Donnees + Alertes + Export
+# STYLE   : Inspire du template SwiftBox (fond clair, vert foret, DM Sans)
+# ==============================================================================
+ 
+import streamlit as st
+import pandas as pd
+import time, os
+ 
+from backend.orchestrateur   import orchestrer, detecter_agent
+from backend.indexer         import index_existe, creer_index, indexer_pdfs
+from backend.utils.export    import exporter_pdf, exporter_powerpoint, exporter_image
+from backend.config.settings import (
+    get_credential, get_embedding_client,
+    INDEX_POLITIQUES, INDEX_STOCKS, INDEX_COMMANDES, INDEX_CLIENTS,
+    DOSSIER_POLITIQUES, DOSSIER_STOCKS, DOSSIER_COMMANDES, DOSSIER_CLIENTS,
+    COMPANY_NAME, COMPANY_SLOGAN
+)
+ 
+st.set_page_config(
+    page_title=f"{COMPANY_NAME} — Dashboard",
+    page_icon="🚗",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+ 
+# ==============================================================================
+# CSS — Style SwiftBox adapte AutoPlus
+# ==============================================================================
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=Fraunces:ital,wght@0,600;0,800;1,600&display=swap');
+ 
+:root {
+  --bg:            #f2f7f4;
+  --surface:       #ffffff;
+  --surface2:      #eaf3ed;
+  --surface3:      #d6ebe0;
+  --border:        #cce0d3;
+  --border2:       #aecfbb;
+  --text:          #0f1f16;
+  --text2:         #3d6350;
+  --text3:         #7aaa8e;
+  --accent:        #166534;
+  --accent-mid:    #16a34a;
+  --accent-light:  #22c55e;
+  --accent-bg:     #dcfce7;
+  --accent-border: #86efac;
+  --amber:         #d97706;
+  --amber-bg:      #fef3c7;
+  --amber-bd:      #fcd34d;
+  --blue:          #1d4ed8;
+  --blue-bg:       #dbeafe;
+  --blue-bd:       #93c5fd;
+  --red:           #b91c1c;
+  --red-bg:        #fee2e2;
+  --red-bd:        #fca5a5;
+  --purple:        #6d28d9;
+  --purple-bg:     #ede9fe;
+  --purple-bd:     #c4b5fd;
+  --r-sm: 6px; --r-md: 10px; --r-lg: 14px; --r-xl: 20px;
+  --font-d: 'Fraunces', Georgia, serif;
+  --font-b: 'DM Sans', sans-serif;
+  --shadow-sm: 0 1px 3px rgba(22,101,52,0.08);
+  --shadow-md: 0 4px 16px rgba(22,101,52,0.12);
+}
+ 
+html, body, [class*="css"] {
+  font-family: var(--font-b) !important;
+  background-color: var(--bg) !important;
+  color: var(--text) !important;
+}
+section[data-testid="stSidebar"] {
+  background: var(--surface) !important;
+  border-right: 1px solid var(--border) !important;
+}
+section[data-testid="stSidebar"] * { font-family: var(--font-b) !important; }
+ 
+.stTextInput input, .stTextArea textarea {
+  background: var(--surface) !important;
+  border: 1px solid var(--border2) !important;
+  border-radius: 99px !important;
+  color: var(--text) !important;
+  font-family: var(--font-b) !important;
+  font-size: 13px !important;
+}
+.stTextInput input:focus, .stTextArea textarea:focus {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 2px rgba(22,101,52,0.1) !important;
+}
+.stButton button {
+  background: var(--accent) !important;
+  color: #fff !important;
+  border: none !important;
+  border-radius: var(--r-md) !important;
+  font-family: var(--font-b) !important;
+  font-weight: 600 !important;
+  font-size: 13px !important;
+  padding: 8px 16px !important;
+  transition: background 0.15s, transform 0.1s !important;
+}
+.stButton button:hover {
+  background: #14532d !important;
+  transform: translateY(-1px) !important;
+  box-shadow: 0 4px 12px rgba(22,101,52,0.35) !important;
+}
+.stTabs [data-baseweb="tab-list"] {
+  background: var(--surface2) !important;
+  border-radius: var(--r-lg) !important;
+  padding: 4px !important;
+  gap: 2px !important;
+}
+.stTabs [data-baseweb="tab"] {
+  color: var(--text2) !important;
+  font-family: var(--font-b) !important;
+  font-weight: 500 !important;
+  font-size: 13px !important;
+  border-radius: var(--r-md) !important;
+}
+.stTabs [aria-selected="true"] {
+  background: var(--surface) !important;
+  color: var(--accent) !important;
+  font-weight: 600 !important;
+  box-shadow: var(--shadow-sm) !important;
+}
+.stDataFrame { border: 1px solid var(--border) !important; border-radius: var(--r-lg) !important; }
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: var(--surface2); }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 99px; }
+ 
+.ap-hero {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r-xl); padding: 1.8rem 2rem; margin-bottom: 1rem;
+  display: flex; align-items: center; justify-content: space-between;
+  box-shadow: var(--shadow-sm);
+}
+.ap-eyebrow {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 11.5px; font-weight: 600; color: var(--accent);
+  background: var(--accent-bg); border: 1px solid var(--accent-border);
+  border-radius: 99px; padding: 4px 13px; margin-bottom: 0.75rem;
+}
+.ap-hero h1 {
+  font-family: var(--font-d); font-weight: 800; font-size: 1.75rem;
+  line-height: 1.2; letter-spacing: -0.6px; color: var(--text); margin-bottom: 0.5rem;
+}
+.ap-hero h1 em { font-style: italic; color: var(--accent); }
+.ap-hero-desc { font-size: 13.5px; color: var(--text2); line-height: 1.7; }
+ 
+.agent-pills { display: flex; gap: 10px; }
+.ap-pill {
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: var(--r-lg); padding: 1rem 1.1rem; text-align: center;
+  min-width: 95px; transition: box-shadow 0.2s, transform 0.2s, border-color 0.2s;
+}
+.ap-pill:hover { box-shadow: var(--shadow-md); transform: translateY(-2px); border-color: var(--accent-border); }
+.ap-pill-icon { width: 34px; height: 34px; border-radius: var(--r-md); display: flex; align-items: center; justify-content: center; font-size: 15px; margin: 0 auto 7px; }
+.ap-pill-icon.green  { background: var(--accent-bg); color: var(--accent); }
+.ap-pill-icon.amber  { background: var(--amber-bg);  color: var(--amber); }
+.ap-pill-icon.blue   { background: var(--blue-bg);   color: var(--blue); }
+.ap-pill-icon.purple { background: var(--purple-bg); color: var(--purple); }
+.ap-pill-lbl  { font-size: 10px; color: var(--text3); margin-bottom: 2px; }
+.ap-pill-name { font-size: 12px; font-weight: 600; color: var(--text); }
+ 
+.ap-kpi-bar {
+  display: grid; grid-template-columns: repeat(4,1fr);
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r-xl); margin-bottom: 1rem;
+  box-shadow: var(--shadow-sm); overflow: hidden;
+}
+.ap-kpi-item {
+  padding: 1rem 1.25rem; border-right: 1px solid var(--border);
+  display: flex; align-items: center; gap: 13px;
+}
+.ap-kpi-item:last-child { border-right: none; }
+.ap-kpi-ic { width: 40px; height: 40px; border-radius: var(--r-md); display: flex; align-items: center; justify-content: center; font-size: 17px; flex-shrink: 0; }
+.ap-kpi-ic.green  { background: var(--accent-bg); color: var(--accent); }
+.ap-kpi-ic.blue   { background: var(--blue-bg);   color: var(--blue); }
+.ap-kpi-ic.amber  { background: var(--amber-bg);  color: var(--amber); }
+.ap-kpi-ic.red    { background: var(--red-bg);    color: var(--red); }
+.ap-kpi-lbl { font-size: 10.5px; color: var(--text3); font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 2px; }
+.ap-kpi-val { font-size: 20px; font-weight: 700; color: var(--text); letter-spacing: -0.4px; font-family: var(--font-d); }
+.ap-kpi-dl  { font-size: 11px; font-weight: 500; margin-top: 1px; }
+.ap-kpi-dl.up   { color: var(--accent-mid); }
+.ap-kpi-dl.down { color: var(--red); }
+ 
+.ap-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); margin-bottom: 1rem; box-shadow: var(--shadow-sm); overflow: hidden; }
+.ap-card-head { padding: 0.9rem 1.1rem; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+.ap-card-title { font-size: 13.5px; font-weight: 600; color: var(--text); }
+ 
+.ap-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; font-weight: 600; padding: 3px 10px; border-radius: 99px; }
+.ap-badge.green  { background: var(--accent-bg); color: var(--accent); }
+.ap-badge.blue   { background: var(--blue-bg);   color: var(--blue); }
+.ap-badge.amber  { background: var(--amber-bg);  color: var(--amber); }
+.ap-badge.red    { background: var(--red-bg);    color: var(--red); }
+ 
+.ap-alerte-critique { background: var(--red-bg);   border: 1px solid var(--red-bd);   border-left: 4px solid var(--red);   border-radius: var(--r-md); padding: 0.7rem 1rem; margin: 0.35rem 0; font-size: 13px; color: var(--red); }
+.ap-alerte-attention{ background: var(--amber-bg); border: 1px solid var(--amber-bd); border-left: 4px solid var(--amber); border-radius: var(--r-md); padding: 0.7rem 1rem; margin: 0.35rem 0; font-size: 13px; color: var(--amber); }
+.ap-alerte-retard   { background: var(--blue-bg);  border: 1px solid var(--blue-bd);  border-left: 4px solid var(--blue);  border-radius: var(--r-md); padding: 0.7rem 1rem; margin: 0.35rem 0; font-size: 13px; color: var(--blue); }
+ 
+.ap-agents-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 1rem; }
+.ap-a-card { border: 1px solid var(--border); border-radius: var(--r-md); padding: 0.9rem; background: var(--bg); transition: box-shadow 0.2s, border-color 0.2s; }
+.ap-a-card:hover { box-shadow: var(--shadow-sm); border-color: var(--accent-border); }
+.ap-a-top  { display: flex; align-items: center; gap: 9px; margin-bottom: 6px; }
+.ap-a-ic   { width: 30px; height: 30px; border-radius: var(--r-sm); display: flex; align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0; }
+.ap-a-ic.green  { background: var(--accent-bg); color: var(--accent); }
+.ap-a-ic.amber  { background: var(--amber-bg);  color: var(--amber); }
+.ap-a-ic.blue   { background: var(--blue-bg);   color: var(--blue); }
+.ap-a-ic.purple { background: var(--purple-bg); color: var(--purple); }
+.ap-a-name { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.ap-a-body { font-size: 12px; color: var(--text2); line-height: 1.55; }
+.ap-a-time { font-size: 10px; color: var(--text3); margin-top: 5px; }
+ 
+.ap-chat-panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-xl); display: flex; flex-direction: column; height: 560px; overflow: hidden; box-shadow: var(--shadow-sm); }
+.ap-chat-topbar { padding: 12px 14px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; }
+.ap-bot-av { width: 36px; height: 36px; background: var(--accent); border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 16px; flex-shrink: 0; box-shadow: 0 0 0 3px var(--accent-bg); }
+.ap-bot-name { font-size: 13.5px; font-weight: 600; color: var(--text); }
+.ap-bot-status { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--accent-mid); font-weight: 500; }
+.ap-online-dot { width: 7px; height: 7px; background: var(--accent-mid); border-radius: 50%; animation: apulse 2s infinite; }
+@keyframes apulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.5;transform:scale(0.85)} }
+ 
+.ap-chat-msgs { flex: 1; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; background: var(--bg); }
+.ap-msg { display: flex; align-items: flex-end; gap: 8px; }
+.ap-msg.user { flex-direction: row-reverse; }
+.ap-msg-av { width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 600; flex-shrink: 0; }
+.ap-msg-av.bot  { background: var(--accent); color: #fff; }
+.ap-msg-av.user { background: var(--surface2); color: var(--text2); border: 1px solid var(--border); }
+.ap-bubble { max-width: 80%; font-size: 12.5px; line-height: 1.55; padding: 9px 13px; border-radius: 15px; }
+.ap-msg.bot  .ap-bubble { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-bottom-left-radius: 3px; }
+.ap-msg.user .ap-bubble { background: var(--accent); color: #fff; border-bottom-right-radius: 3px; }
+ 
+.ap-suggestions { padding: 8px 12px 6px; display: flex; flex-wrap: wrap; gap: 6px; border-top: 1px solid var(--border); background: var(--surface); }
+ 
+.ap-sec-title { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: var(--text3); margin-bottom: 8px; }
+ 
+.ap-notif { border-radius: var(--r-md); padding: 0.65rem 1rem; margin-bottom: 0.5rem; font-size: 12.5px; border-left: 3px solid; display: flex; align-items: center; gap: 8px; }
+.ap-notif.info    { background: var(--blue-bg);   border-color: var(--blue);       color: var(--blue); }
+.ap-notif.success { background: var(--accent-bg); border-color: var(--accent-mid); color: var(--accent); }
+.ap-notif.warn    { background: var(--amber-bg);  border-color: var(--amber);      color: var(--amber); }
+.ap-notif.error   { background: var(--red-bg);    border-color: var(--red);        color: var(--red); }
+ 
+hr { border-color: var(--border) !important; }
+</style>
+""", unsafe_allow_html=True)
+ 
+# ==============================================================================
+# CONNEXION AZURE
+# ==============================================================================
+@st.cache_resource
+def load_azure():
+    try:
+        return get_credential(), get_embedding_client()
+    except Exception as e:
+        st.error(f"Erreur connexion Azure : {e}")
+        st.stop()
+ 
+credential, embedding_client = load_azure()
+ 
+# ==============================================================================
+# SESSION STATE
+# ==============================================================================
+defaults = {
+    "messages": [], "nb_questions": 0, "notifications": [],
+    "alertes_stocks": [], "agent_actif": "politiques",
+    "auto_detect": True, "index_status": {},
+    "derniers_agents": []
+}
+for k, v in defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
+ 
+@st.cache_data(ttl=300)
+def verifier_index(_cred):
+    return {
+        "politiques": index_existe(_cred, INDEX_POLITIQUES),
+        "stocks"    : index_existe(_cred, INDEX_STOCKS),
+        "commandes" : index_existe(_cred, INDEX_COMMANDES),
+        "clients"   : index_existe(_cred, INDEX_CLIENTS),
+    }
+ 
+st.session_state.index_status = verifier_index(credential)
+ 
+def add_notif(msg, kind="info"):
+    st.session_state.notifications.append({"msg": msg, "kind": kind})
+    if len(st.session_state.notifications) > 3:
+        st.session_state.notifications.pop(0)
+ 
+def compter_excel(dossier, fichier):
+    chemin = f"{dossier}/{fichier}"
+    if os.path.exists(chemin):
+        try: return len(pd.read_excel(chemin))
+        except: return 0
+    return 0
+ 
+# ==============================================================================
+# SIDEBAR
+# ==============================================================================
+with st.sidebar:
+    st.markdown(f"""
+    <div style="display:flex;align-items:center;gap:10px;padding:0.5rem 0 1rem">
+      <div style="width:34px;height:34px;background:var(--accent);border-radius:var(--r-md);display:flex;align-items:center;justify-content:center;color:#fff;font-size:16px;box-shadow:0 2px 8px rgba(22,101,52,0.35)">🚗</div>
+      <span style="font-family:var(--font-d);font-weight:800;font-size:18px;color:var(--text)">Auto<em style="font-style:italic;color:var(--accent)">Plus</em></span>
+    </div>
+    """, unsafe_allow_html=True)
+ 
+    st.markdown("---")
+    st.markdown('<p class="ap-sec-title">Agent actif</p>', unsafe_allow_html=True)
+ 
+    auto = st.toggle("Detection automatique", value=True)
+    st.session_state.auto_detect = auto
+ 
+    if not auto:
+        choix = st.radio("Agent", ["politiques","stocks","commandes","clients"],
+            format_func=lambda x: {"politiques":"📋 Politiques","stocks":"📦 Stocks","commandes":"🚗 Commandes","clients":"⭐ Fidelisation"}[x])
+        st.session_state.agent_actif = choix
+ 
+    st.markdown("---")
+    st.markdown('<p class="ap-sec-title">Indexation rapide</p>', unsafe_allow_html=True)
+ 
+    agent_idx = st.selectbox("Agent a indexer", ["politiques","stocks","commandes","clients"])
+    config    = {
+        "politiques": (INDEX_POLITIQUES, DOSSIER_POLITIQUES),
+        "stocks"    : (INDEX_STOCKS,     DOSSIER_STOCKS),
+        "commandes" : (INDEX_COMMANDES,  DOSSIER_COMMANDES),
+        "clients"   : (INDEX_CLIENTS,    DOSSIER_CLIENTS),
+    }
+    idx_name, dossier = config[agent_idx]
+    deja = st.session_state.index_status.get(agent_idx, False)
+ 
+    if deja:
+        st.markdown('<span class="ap-badge green">Index actif</span>', unsafe_allow_html=True)
+        forcer = st.checkbox("Re-indexer")
+    else:
+        st.markdown('<span class="ap-badge red">Non indexe</span>', unsafe_allow_html=True)
+        forcer = False
+ 
+    if st.button("Indexer"):
+        if deja and not forcer:
+            add_notif("Index deja existant — cochez Re-indexer pour forcer.", "warn")
+        else:
+            with st.spinner(f"Indexation {agent_idx}..."):
+                try:
+                    creer_index(credential, idx_name)
+                    chunks, fichiers = indexer_pdfs(credential, embedding_client, dossier, idx_name, agent_idx)
+                    add_notif(f"{fichiers} PDF · {chunks} chunks indexes", "success")
+                    st.cache_data.clear()
+                except Exception as e:
+                    add_notif(f"Erreur : {str(e)}", "error")
+        st.rerun()
+ 
+    st.markdown("---")
+    if st.button("Effacer conversation"):
+        st.session_state.messages      = []
+        st.session_state.nb_questions  = 0
+        st.session_state.notifications = []
+        st.session_state.derniers_agents = []
+        st.rerun()
+ 
+    st.markdown("---")
+    st.markdown("""
+    <div style="font-size:11.5px;color:var(--text2);line-height:1.9;">
+      <strong style="color:var(--text)">Navigation</strong><br>
+      <strong style="color:var(--accent)">Dashboard</strong> (cette page)<br>
+      <a href="/Evaluation_et_Index" style="color:var(--text2)">Evaluation et Index</a>
+    </div>
+    """, unsafe_allow_html=True)
+ 
+# ==============================================================================
+# HERO
+# ==============================================================================
+agents_actifs = sum(st.session_state.index_status.values())
+nb_alertes    = len(st.session_state.alertes_stocks)
+nb_commandes  = compter_excel(DOSSIER_COMMANDES, "commandes.xlsx")
+nb_clients    = compter_excel(DOSSIER_CLIENTS,   "clients.xlsx")
+ 
+st.markdown(f"""
+<div class="ap-hero">
+  <div>
+    <div class="ap-eyebrow">IA multi-agents — {agents_actifs}/4 agents actifs</div>
+    <h1>Gestion intelligente,<br><em>pilotee par l'IA</em></h1>
+    <p class="ap-hero-desc">{COMPANY_SLOGAN}<br>Politiques · Stocks · Commandes · Fidelisation</p>
+  </div>
+  <div class="agent-pills">
+    <div class="ap-pill"><div class="ap-pill-icon green">📋</div><div class="ap-pill-lbl">Agent</div><div class="ap-pill-name">Politiques</div></div>
+    <div class="ap-pill"><div class="ap-pill-icon amber">📦</div><div class="ap-pill-lbl">Agent</div><div class="ap-pill-name">Stocks</div></div>
+    <div class="ap-pill"><div class="ap-pill-icon blue">🚗</div><div class="ap-pill-lbl">Agent</div><div class="ap-pill-name">Commandes</div></div>
+    <div class="ap-pill"><div class="ap-pill-icon purple">⭐</div><div class="ap-pill-lbl">Agent</div><div class="ap-pill-name">Fidelisation</div></div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+ 
+# ==============================================================================
+# KPI BAR
+# ==============================================================================
+alerte_color = "red" if nb_alertes > 0 else "green"
+st.markdown(f"""
+<div class="ap-kpi-bar">
+  <div class="ap-kpi-item">
+    <div class="ap-kpi-ic green">🚗</div>
+    <div><div class="ap-kpi-lbl">Commandes actives</div><div class="ap-kpi-val">{nb_commandes}</div><div class="ap-kpi-dl up">En cours</div></div>
+  </div>
+  <div class="ap-kpi-item">
+    <div class="ap-kpi-ic blue">👥</div>
+    <div><div class="ap-kpi-lbl">Clients actifs</div><div class="ap-kpi-val">{nb_clients}</div><div class="ap-kpi-dl up">Base de donnees</div></div>
+  </div>
+  <div class="ap-kpi-item">
+    <div class="ap-kpi-ic amber">💬</div>
+    <div><div class="ap-kpi-lbl">Questions posees</div><div class="ap-kpi-val">{st.session_state.nb_questions}</div><div class="ap-kpi-dl up">Cette session</div></div>
+  </div>
+  <div class="ap-kpi-item">
+    <div class="ap-kpi-ic {alerte_color}">⚠️</div>
+    <div><div class="ap-kpi-lbl">Alertes stocks</div><div class="ap-kpi-val">{nb_alertes}</div><div class="ap-kpi-dl {'down' if nb_alertes > 0 else 'up'}">{'Action requise' if nb_alertes > 0 else 'Tout est OK'}</div></div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+ 
+# ==============================================================================
+# NOTIFICATIONS
+# ==============================================================================
+for notif in st.session_state.notifications:
+    icons = {"info":"ℹ️","success":"✅","warn":"⚠️","error":"❌"}
+    st.markdown(f'<div class="ap-notif {notif["kind"]}">{icons.get(notif["kind"],"ℹ️")} {notif["msg"]}</div>', unsafe_allow_html=True)
+ 
+# ==============================================================================
+# LAYOUT DEUX COLONNES
+# ==============================================================================
+col_main, col_chat = st.columns([3, 2], gap="medium")
+ 
+# ── COLONNE GAUCHE ────────────────────────────────────────────────
+with col_main:
+    tab_chat_hist, tab_alertes, tab_donnees, tab_export = st.tabs([
+        "💬 Historique", "🔴 Alertes Stocks", "📊 Donnees", "📤 Exporter"
+    ])
+ 
+    with tab_chat_hist:
+        st.markdown('<p class="ap-sec-title">Activite des agents IA</p>', unsafe_allow_html=True)
+ 
+        if st.session_state.derniers_agents:
+            icons_agents = {"politiques":("📋","green"),"stocks":("📦","amber"),"commandes":("🚗","blue"),"clients":("⭐","purple")}
+            noms_agents  = {"politiques":"Agent Politiques","stocks":"Agent Stocks","commandes":"Agent Commandes","clients":"Agent Fidelisation"}
+            cards = ""
+            for entry in st.session_state.derniers_agents[-4:]:
+                icone, color = icons_agents.get(entry["agent"], ("🤖","green"))
+                cards += f"""
+                <div class="ap-a-card">
+                  <div class="ap-a-top">
+                    <div class="ap-a-ic {color}">{icone}</div>
+                    <div class="ap-a-name">{noms_agents.get(entry["agent"],"Agent IA")}</div>
+                  </div>
+                  <div class="ap-a-body">{entry["reponse"][:120]}...</div>
+                  <div class="ap-a-time">{entry["time"]}</div>
+                </div>"""
+            st.markdown(f'<div class="ap-agents-grid">{cards}</div>', unsafe_allow_html=True)
+        else:
+            st.markdown("""
+            <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);padding:2rem;text-align:center;color:var(--text3)">
+              <div style="font-size:2rem;margin-bottom:0.5rem">💬</div>
+              <div style="font-size:13.5px;font-weight:500">Posez votre premiere question dans le chat</div>
+            </div>
+            """, unsafe_allow_html=True)
+ 
+        if st.session_state.messages:
+            st.markdown('<p class="ap-sec-title" style="margin-top:1rem">Conversation complete</p>', unsafe_allow_html=True)
+            st.markdown('<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);padding:1rem;max-height:350px;overflow-y:auto">', unsafe_allow_html=True)
+            for msg in st.session_state.messages:
+                if msg["role"] == "user":
+                    st.markdown(f'<div class="ap-msg user" style="margin-bottom:8px"><div class="ap-msg-av user">Vous</div><div class="ap-bubble">{msg["content"]}</div></div>', unsafe_allow_html=True)
+                else:
+                    agent = msg.get("agent","politiques")
+                    noms  = {"politiques":"📋","stocks":"📦","commandes":"🚗","clients":"⭐"}
+                    st.markdown(f'<div class="ap-msg bot" style="margin-bottom:8px"><div class="ap-msg-av bot">{noms.get(agent,"🤖")}</div><div class="ap-bubble">{msg["content"][:300]}{"..." if len(msg["content"])>300 else ""}</div></div>', unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+ 
+    with tab_alertes:
+        st.markdown('<p class="ap-sec-title">Alertes de stock en temps reel</p>', unsafe_allow_html=True)
+        if st.button("Actualiser les alertes"):
+            with st.spinner("Analyse..."):
+                r = orchestrer("analyse complete des stocks et alertes", "stocks")
+                st.session_state.alertes_stocks = r.get("alertes", [])
+            st.rerun()
+        if not st.session_state.alertes_stocks:
+            st.markdown('<div style="background:var(--accent-bg);border:1px solid var(--accent-border);border-radius:var(--r-lg);padding:1.2rem;text-align:center;color:var(--accent);font-weight:500">Aucune alerte de stock detectee</div>', unsafe_allow_html=True)
+        else:
+            for a in st.session_state.alertes_stocks:
+                css = {"CRITIQUE":"ap-alerte-critique","ATTENTION":"ap-alerte-attention","RETARD":"ap-alerte-retard"}.get(a.get("type","ATTENTION"),"ap-alerte-attention")
+                st.markdown(f'<div class="{css}">{a["message"]}</div>', unsafe_allow_html=True)
+ 
+    with tab_donnees:
+        st.markdown('<p class="ap-sec-title">Donnees en temps reel</p>', unsafe_allow_html=True)
+        s1, s2, s3 = st.tabs(["📦 Stocks","🚗 Commandes","⭐ Clients"])
+        for sous_tab, dossier, fichier in [(s1,DOSSIER_STOCKS,"stocks.xlsx"),(s2,DOSSIER_COMMANDES,"commandes.xlsx"),(s3,DOSSIER_CLIENTS,"clients.xlsx")]:
+            with sous_tab:
+                chemin = f"{dossier}/{fichier}"
+                if os.path.exists(chemin):
+                    st.dataframe(pd.read_excel(chemin), use_container_width=True)
+                else:
+                    st.info(f"Fichier introuvable : {chemin}")
+ 
+    with tab_export:
+        st.markdown('<p class="ap-sec-title">Exporter les resultats</p>', unsafe_allow_html=True)
+        if not st.session_state.messages:
+            st.info("Posez d'abord des questions dans le chat.")
+        else:
+            dernier = next((m for m in reversed(st.session_state.messages) if m["role"]=="assistant"), None)
+            titre   = st.text_input("Titre du rapport", value="Rapport AutoPlus IA")
+            fmt     = st.radio("Format", ["PDF","PowerPoint","Image PNG"], horizontal=True)
+            if st.button("Generer"):
+                with st.spinner("Generation..."):
+                    try:
+                        contenu = dernier["content"] if dernier else ""
+                        os.makedirs("exports", exist_ok=True)
+                        if fmt == "PDF":
+                            f = exporter_pdf(titre, contenu)
+                            if f:
+                                with open(f,"rb") as fp: st.download_button("Telecharger PDF", fp, file_name=os.path.basename(f), mime="application/pdf")
+                            else: st.error("pip install reportlab")
+                        elif fmt == "PowerPoint":
+                            sections = [{"titre":f"Rep {i+1}","contenu":m["content"]} for i,m in enumerate(st.session_state.messages) if m["role"]=="assistant"]
+                            f = exporter_powerpoint(titre, sections)
+                            if f:
+                                with open(f,"rb") as fp: st.download_button("Telecharger PPTX", fp, file_name=os.path.basename(f), mime="application/vnd.openxmlformats-officedocument.presentationml.presentation")
+                            else: st.error("pip install python-pptx")
+                        elif fmt == "Image PNG":
+                            f = exporter_image(titre, contenu)
+                            if f:
+                                with open(f,"rb") as fp: st.download_button("Telecharger PNG", fp, file_name=os.path.basename(f), mime="image/png")
+                            else: st.error("pip install Pillow")
+                    except Exception as e:
+                        st.error(f"Erreur : {str(e)}")
+ 
+# ── COLONNE DROITE — CHAT ─────────────────────────────────────────
+with col_chat:
+    st.markdown('<p class="ap-sec-title">Assistant IA</p>', unsafe_allow_html=True)
+ 
+    agent_actif_nom = {"politiques":"Agent Politiques","stocks":"Agent Stocks","commandes":"Agent Commandes","clients":"Agent Fidelisation"}.get(st.session_state.agent_actif, "AutoBot")
+ 
+    st.markdown(f"""
+    <div class="ap-chat-panel">
+      <div class="ap-chat-topbar">
+        <div class="ap-bot-av">🤖</div>
+        <div style="flex:1">
+          <div class="ap-bot-name">AutoBot — {agent_actif_nom}</div>
+          <div class="ap-bot-status"><span class="ap-online-dot"></span>En ligne · Microsoft Agent Framework</div>
+        </div>
+      </div>
+      <div class="ap-chat-msgs">
+    """, unsafe_allow_html=True)
+ 
+    if not st.session_state.messages:
+        st.markdown("""
+        <div class="ap-msg bot">
+          <div class="ap-msg-av bot">🤖</div>
+          <div class="ap-bubble">Bonjour ! Je suis <strong>AutoBot</strong>.<br><br>
+          Je reponds a vos questions sur les politiques de ventes, les stocks, les commandes et la fidelisation clients.<br><br>Comment puis-je vous aider ?</div>
+        </div>""", unsafe_allow_html=True)
+    else:
+        for msg in st.session_state.messages[-6:]:
+            if msg["role"] == "user":
+                st.markdown(f'<div class="ap-msg user"><div class="ap-msg-av user">Vous</div><div class="ap-bubble">{msg["content"]}</div></div>', unsafe_allow_html=True)
+            else:
+                agent = msg.get("agent","politiques")
+                noms  = {"politiques":"📋","stocks":"📦","commandes":"🚗","clients":"⭐"}
+                st.markdown(f'<div class="ap-msg bot"><div class="ap-msg-av bot">{noms.get(agent,"🤖")}</div><div class="ap-bubble">{msg["content"][:400]}{"..." if len(msg["content"])>400 else ""}</div></div>', unsafe_allow_html=True)
+ 
+    st.markdown('</div><div class="ap-suggestions"><span style="font-size:10.5px;color:var(--text3);align-self:center">Suggestions :</span></div></div>', unsafe_allow_html=True)
+ 
+    col_c1, col_c2 = st.columns(2)
+    with col_c1:
+        if st.button("📦 Ruptures de stock ?", use_container_width=True):
+            st.session_state._quick_send = "Y a-t-il des ruptures de stock en ce moment ?"
+    with col_c2:
+        if st.button("📋 Conditions leasing", use_container_width=True):
+            st.session_state._quick_send = "Quelles sont les conditions de leasing ?"
+    col_c3, col_c4 = st.columns(2)
+    with col_c3:
+        if st.button("🚗 Statut commandes", use_container_width=True):
+            st.session_state._quick_send = "Quelles sont les commandes en cours ?"
+    with col_c4:
+        if st.button("⭐ Clients VIP", use_container_width=True):
+            st.session_state._quick_send = "Qui sont nos clients VIP ?"
+ 
+    if hasattr(st.session_state, '_quick_send'):
+        quick_msg = st.session_state._quick_send
+        del st.session_state._quick_send
+        agent = detecter_agent(quick_msg) if st.session_state.auto_detect else st.session_state.agent_actif
+        st.session_state.messages.append({"role":"user","content":quick_msg})
+        with st.spinner(f"Agent {agent} reflechit..."):
+            try:
+                start    = time.time()
+                resultat = orchestrer(quick_msg, agent)
+                elapsed  = round(time.time() - start, 2)
+                if resultat.get("alertes"):
+                    st.session_state.alertes_stocks = resultat["alertes"]
+                st.session_state.messages.append({"role":"assistant","content":resultat["reponse"],"agent":resultat["agent"]})
+                st.session_state.derniers_agents.append({"agent":resultat["agent"],"reponse":resultat["reponse"],"time":time.strftime("%H:%M")})
+                if len(st.session_state.derniers_agents) > 4:
+                    st.session_state.derniers_agents.pop(0)
+                st.session_state.nb_questions += 1
+                add_notif(f"Agent {agent} — {elapsed}s", "success")
+            except Exception as e:
+                add_notif(f"Erreur : {str(e)}", "error")
+                st.session_state.messages.pop()
+        st.rerun()
+ 
+    st.markdown("---")
+    with st.form("chat_form", clear_on_submit=True):
+        user_input = st.text_input("", placeholder="Posez votre question...", label_visibility="collapsed")
+        submitted  = st.form_submit_button("Envoyer", use_container_width=True)
+ 
+    if submitted and user_input.strip():
+        agent = detecter_agent(user_input) if st.session_state.auto_detect else st.session_state.agent_actif
+        st.session_state.agent_actif = agent
+        st.session_state.messages.append({"role":"user","content":user_input.strip()})
+        with st.spinner(f"Agent {agent} reflechit..."):
+            try:
+                start    = time.time()
+                resultat = orchestrer(user_input.strip(), agent)
+                elapsed  = round(time.time() - start, 2)
+                if resultat.get("alertes"):
+                    st.session_state.alertes_stocks = resultat["alertes"]
+                st.session_state.messages.append({"role":"assistant","content":resultat["reponse"],"agent":resultat["agent"]})
+                st.session_state.derniers_agents.append({"agent":resultat["agent"],"reponse":resultat["reponse"],"time":time.strftime("%H:%M")})
+                if len(st.session_state.derniers_agents) > 4:
+                    st.session_state.derniers_agents.pop(0)
+                st.session_state.nb_questions += 1
+                add_notif(f"Agent {agent} — {elapsed}s", "success")
+            except Exception as e:
+                add_notif(f"Erreur : {str(e)}", "error")
+                st.session_state.messages.pop()
+        st.rerun()
+ 
+================================================================================
+FICHIER 3 : pages/2_Evaluation_et_Index.py
+================================================================================
+ 
+# ==============================================================================
+# FICHIER : pages/2_Evaluation_et_Index.py
+# ROLE    : Gestion des index Azure AI Search + evaluation RAGAS + LLM Judge
+# STYLE   : Inspire du template SwiftBox
+# ==============================================================================
+ 
+import streamlit as st
+import json, asyncio
+import nest_asyncio
+nest_asyncio.apply()
+ 
+from backend.indexer         import index_existe, creer_index, indexer_pdfs
+from backend.orchestrateur   import orchestrer
+from backend.config.settings import (
+    get_credential, get_embedding_client, get_agent_client,
+    INDEX_POLITIQUES, INDEX_STOCKS, INDEX_COMMANDES, INDEX_CLIENTS,
+    DOSSIER_POLITIQUES, DOSSIER_STOCKS, DOSSIER_COMMANDES, DOSSIER_CLIENTS,
+    COMPANY_NAME
+)
+ 
+st.set_page_config(
+    page_title=f"{COMPANY_NAME} — Evaluation & Index",
+    page_icon="🔬",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+ 
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=Fraunces:ital,wght@0,600;0,800;1,600&display=swap');
+ 
+:root {
+  --bg:#f2f7f4; --surface:#ffffff; --surface2:#eaf3ed; --surface3:#d6ebe0;
+  --border:#cce0d3; --border2:#aecfbb;
+  --text:#0f1f16; --text2:#3d6350; --text3:#7aaa8e;
+  --accent:#166534; --accent-mid:#16a34a;
+  --accent-bg:#dcfce7; --accent-border:#86efac;
+  --amber:#d97706; --amber-bg:#fef3c7; --amber-bd:#fcd34d;
+  --blue:#1d4ed8; --blue-bg:#dbeafe; --blue-bd:#93c5fd;
+  --red:#b91c1c; --red-bg:#fee2e2; --red-bd:#fca5a5;
+  --purple:#6d28d9; --purple-bg:#ede9fe; --purple-bd:#c4b5fd;
+  --r-sm:6px; --r-md:10px; --r-lg:14px; --r-xl:20px;
+  --font-d:'Fraunces',Georgia,serif; --font-b:'DM Sans',sans-serif;
+  --shadow-sm:0 1px 3px rgba(22,101,52,0.08);
+  --shadow-md:0 4px 16px rgba(22,101,52,0.12);
+}
+html, body, [class*="css"] { font-family:var(--font-b) !important; background-color:var(--bg) !important; color:var(--text) !important; }
+section[data-testid="stSidebar"] { background:var(--surface) !important; border-right:1px solid var(--border) !important; }
+.stButton button { background:var(--accent) !important; color:#fff !important; border:none !important; border-radius:var(--r-md) !important; font-family:var(--font-b) !important; font-weight:600 !important; font-size:13px !important; transition:background 0.15s,transform 0.1s !important; }
+.stButton button:hover { background:#14532d !important; transform:translateY(-1px) !important; box-shadow:0 4px 12px rgba(22,101,52,0.35) !important; }
+.stTextInput input, .stTextArea textarea { background:var(--surface) !important; border:1px solid var(--border2) !important; border-radius:var(--r-md) !important; color:var(--text) !important; font-family:var(--font-b) !important; }
+.stTextInput input:focus, .stTextArea textarea:focus { border-color:var(--accent) !important; box-shadow:0 0 0 2px rgba(22,101,52,0.1) !important; }
+.stTabs [data-baseweb="tab-list"] { background:var(--surface2) !important; border-radius:var(--r-lg) !important; padding:4px !important; }
+.stTabs [data-baseweb="tab"] { color:var(--text2) !important; font-family:var(--font-b) !important; font-weight:500 !important; border-radius:var(--r-md) !important; }
+.stTabs [aria-selected="true"] { background:var(--surface) !important; color:var(--accent) !important; font-weight:600 !important; box-shadow:var(--shadow-sm) !important; }
+::-webkit-scrollbar { width:5px; }
+::-webkit-scrollbar-track { background:var(--surface2); }
+::-webkit-scrollbar-thumb { background:var(--border2); border-radius:99px; }
+hr { border-color:var(--border) !important; }
+ 
+.ev-hero { background:var(--surface); border:1px solid var(--border); border-radius:var(--r-xl); padding:1.8rem 2rem; margin-bottom:1rem; box-shadow:var(--shadow-sm); }
+.ev-eyebrow { display:inline-flex; align-items:center; gap:7px; font-size:11.5px; font-weight:600; color:var(--accent); background:var(--accent-bg); border:1px solid var(--accent-border); border-radius:99px; padding:4px 13px; margin-bottom:0.75rem; }
+.ev-hero h1 { font-family:var(--font-d); font-weight:800; font-size:1.75rem; line-height:1.2; letter-spacing:-0.6px; color:var(--text); margin-bottom:0.5rem; }
+.ev-hero h1 em { font-style:italic; color:var(--accent); }
+.ev-hero-desc { font-size:13.5px; color:var(--text2); line-height:1.7; }
+ 
+.ev-sec-title { font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text3); margin-bottom:8px; }
+ 
+.ev-badge { display:inline-flex; align-items:center; gap:4px; font-size:10.5px; font-weight:600; padding:3px 10px; border-radius:99px; }
+.ev-badge.green  { background:var(--accent-bg); color:var(--accent); }
+.ev-badge.red    { background:var(--red-bg);    color:var(--red); }
+.ev-badge.blue   { background:var(--blue-bg);   color:var(--blue); }
+.ev-badge.amber  { background:var(--amber-bg);  color:var(--amber); }
+.ev-badge.purple { background:var(--purple-bg); color:var(--purple); }
+ 
+.ev-index-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+.ev-index-card { background:var(--bg); border:1px solid var(--border); border-radius:var(--r-md); padding:1rem; transition:box-shadow 0.2s,border-color 0.2s; }
+.ev-index-card:hover { box-shadow:var(--shadow-sm); border-color:var(--accent-border); }
+.ev-index-top { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
+.ev-index-name { font-size:13px; font-weight:600; color:var(--text); }
+.ev-index-desc { font-size:11.5px; color:var(--text2); margin-bottom:8px; }
+ 
+.ev-score-card { background:var(--bg); border:1px solid var(--border); border-radius:var(--r-md); padding:1rem; text-align:center; }
+.ev-score-val  { font-family:var(--font-d); font-size:2rem; font-weight:800; color:var(--accent); letter-spacing:-1px; }
+.ev-score-lbl  { font-size:10.5px; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; color:var(--text3); margin-top:2px; }
+.ev-score-bar  { height:6px; background:var(--surface3); border-radius:99px; margin-top:8px; overflow:hidden; }
+.ev-score-fill { height:100%; border-radius:99px; }
+ 
+.ev-verdict { border-radius:var(--r-lg); padding:1.2rem; margin:0.75rem 0; }
+.ev-verdict.bon    { background:var(--accent-bg); border:1px solid var(--accent-border); }
+.ev-verdict.moyen  { background:var(--amber-bg);  border:1px solid var(--amber-bd); }
+.ev-verdict.mauvais{ background:var(--red-bg);    border:1px solid var(--red-bd); }
+.ev-verdict-title  { font-family:var(--font-d); font-size:1.1rem; font-weight:700; margin-bottom:4px; }
+.ev-verdict.bon    .ev-verdict-title { color:var(--accent); }
+.ev-verdict.moyen  .ev-verdict-title { color:var(--amber); }
+.ev-verdict.mauvais .ev-verdict-title { color:var(--red); }
+.ev-verdict-body { font-size:12.5px; color:var(--text2); line-height:1.6; }
+ 
+.ev-notif { border-radius:var(--r-md); padding:0.65rem 1rem; margin-bottom:0.5rem; font-size:12.5px; border-left:3px solid; }
+.ev-notif.info    { background:var(--blue-bg);   border-color:var(--blue);       color:var(--blue); }
+.ev-notif.success { background:var(--accent-bg); border-color:var(--accent-mid); color:var(--accent); }
+.ev-notif.warn    { background:var(--amber-bg);  border-color:var(--amber);      color:var(--amber); }
+.ev-notif.error   { background:var(--red-bg);    border-color:var(--red);        color:var(--red); }
+ 
+.ev-q-block { background:var(--surface2); border:1px solid var(--border); border-radius:var(--r-md); padding:0.9rem 1rem; margin-bottom:0.75rem; }
+.ev-q-label { font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; color:var(--text3); margin-bottom:4px; }
+.ev-q-text  { font-size:13px; color:var(--text); font-weight:500; }
+.ev-q-rep   { font-size:12px; color:var(--text2); margin-top:6px; border-top:1px solid var(--border); padding-top:6px; }
+</style>
+""", unsafe_allow_html=True)
+ 
+# ==============================================================================
+# CONNEXION AZURE
+# ==============================================================================
+@st.cache_resource
+def load_azure():
+    try:
+        return get_credential(), get_embedding_client()
+    except Exception as e:
+        st.error(f"Erreur connexion Azure : {e}")
+        st.stop()
+ 
+credential, embedding_client = load_azure()
+ 
+@st.cache_data(ttl=60)
+def verifier_index(_cred):
+    return {
+        "politiques": index_existe(_cred, INDEX_POLITIQUES),
+        "stocks"    : index_existe(_cred, INDEX_STOCKS),
+        "commandes" : index_existe(_cred, INDEX_COMMANDES),
+        "clients"   : index_existe(_cred, INDEX_CLIENTS),
+    }
+ 
+if "ev_notifs" not in st.session_state:
+    st.session_state.ev_notifs = []
+ 
+def add_notif(msg, kind="info"):
+    st.session_state.ev_notifs.append({"msg": msg, "kind": kind})
+    if len(st.session_state.ev_notifs) > 4:
+        st.session_state.ev_notifs.pop(0)
+ 
+# ==============================================================================
+# SIDEBAR
+# ==============================================================================
+with st.sidebar:
+    st.markdown("""
+    <div style="display:flex;align-items:center;gap:10px;padding:0.5rem 0 1rem">
+      <div style="width:34px;height:34px;background:var(--accent);border-radius:var(--r-md);display:flex;align-items:center;justify-content:center;color:#fff;font-size:16px">🔬</div>
+      <span style="font-family:var(--font-d);font-weight:800;font-size:18px;color:var(--text)">Eval & <em style="font-style:italic;color:var(--accent)">Index</em></span>
+    </div>
+    """, unsafe_allow_html=True)
+ 
+    st.markdown("---")
+    st.markdown('<p class="ev-sec-title">Navigation</p>', unsafe_allow_html=True)
+    st.markdown("""
+    <div style="font-size:12.5px;color:var(--text2);line-height:2">
+      <a href="/Dashboard" style="color:var(--text2);text-decoration:none">🏠 Dashboard</a><br>
+      <strong style="color:var(--accent)">🔬 Evaluation & Index</strong>
+    </div>
+    """, unsafe_allow_html=True)
+ 
+    st.markdown("---")
+    st.markdown('<p class="ev-sec-title">Statut des index</p>', unsafe_allow_html=True)
+    index_status = verifier_index(credential)
+    for icone, nom, key in [("📋","Politiques","politiques"),("📦","Stocks","stocks"),("🚗","Commandes","commandes"),("⭐","Fidelisation","clients")]:
+        actif = index_status.get(key, False)
+        badge = '<span class="ev-badge green">Actif</span>' if actif else '<span class="ev-badge red">Absent</span>'
+        st.markdown(f'<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 0;font-size:12.5px;color:var(--text2)">{icone} {nom} {badge}</div>', unsafe_allow_html=True)
+ 
+    st.markdown("---")
+    if st.button("Rafraichir les statuts"):
+        st.cache_data.clear()
+        st.rerun()
+ 
+# ==============================================================================
+# HERO
+# ==============================================================================
+index_status    = verifier_index(credential)
+nb_index_actifs = sum(index_status.values())
+ 
+st.markdown(f"""
+<div class="ev-hero">
+  <div class="ev-eyebrow">Gestion des index & evaluation RAG</div>
+  <h1>Index & <em>Evaluation</em></h1>
+  <p class="ev-hero-desc">
+    Gerez vos index Azure AI Search et evaluez la qualite de vos agents IA
+    avec <strong>RAGAS</strong> et <strong>LLM as a Judge</strong>.<br>
+    {nb_index_actifs}/4 index actifs · Microsoft Agent Framework
+  </p>
+</div>
+""", unsafe_allow_html=True)
+ 
+for notif in st.session_state.ev_notifs:
+    icons = {"info":"ℹ️","success":"✅","warn":"⚠️","error":"❌"}
+    st.markdown(f'<div class="ev-notif {notif["kind"]}">{icons.get(notif["kind"],"ℹ️")} {notif["msg"]}</div>', unsafe_allow_html=True)
+ 
+# ==============================================================================
+# ONGLETS
+# ==============================================================================
+tab_index, tab_ragas, tab_judge = st.tabs([
+    "🗂️ Gestion des Index",
+    "📊 Evaluation RAGAS",
+    "🧑‍⚖️ LLM as a Judge"
+])
+ 
+# ── ONGLET INDEX ──────────────────────────────────────────────────
+with tab_index:
+    st.markdown('<p class="ev-sec-title">Etat des index Azure AI Search</p>', unsafe_allow_html=True)
+ 
+    config_agents = {
+        "politiques": (INDEX_POLITIQUES, DOSSIER_POLITIQUES, "📋", "green",  "Politiques de ventes, leasing, financement, garanties"),
+        "stocks"    : (INDEX_STOCKS,     DOSSIER_STOCKS,     "📦", "amber",  "Stocks de voitures et pieces detachees"),
+        "commandes" : (INDEX_COMMANDES,  DOSSIER_COMMANDES,  "🚗", "blue",   "Suivi des commandes et livraisons"),
+        "clients"   : (INDEX_CLIENTS,    DOSSIER_CLIENTS,    "⭐", "purple", "Fidelisation et historique clients"),
+    }
+ 
+    st.markdown('<div class="ev-index-grid">', unsafe_allow_html=True)
+    for agent, (idx_name, dossier, icone, color, desc) in config_agents.items():
+        actif = index_status.get(agent, False)
+        badge = f'<span class="ev-badge green">Actif</span>' if actif else '<span class="ev-badge red">Absent</span>'
+        st.markdown(f"""
+        <div class="ev-index-card">
+          <div class="ev-index-top">
+            <div style="display:flex;align-items:center;gap:8px">
+              <div style="width:30px;height:30px;border-radius:var(--r-sm);background:var(--{color}-bg);color:var(--{color});display:flex;align-items:center;justify-content:center;font-size:14px">{icone}</div>
+              <span class="ev-index-name">{agent.capitalize()}</span>
+            </div>
+            {badge}
+          </div>
+          <div class="ev-index-desc">{desc}</div>
+          <div style="font-size:10.5px;color:var(--text3)">Index : <code style="background:var(--surface3);padding:1px 6px;border-radius:4px;font-size:10px">{idx_name}</code></div>
+        </div>
+        """, unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+ 
+    st.markdown("---")
+    st.markdown('<p class="ev-sec-title">Indexer ou re-indexer un agent</p>', unsafe_allow_html=True)
+ 
+    col1, col2 = st.columns([2,1])
+    with col1:
+        agent_a_indexer = st.selectbox("Choisir l'agent", list(config_agents.keys()),
+            format_func=lambda x: f"{config_agents[x][2]} {x.capitalize()}")
+        idx_name, dossier, _, _, _ = config_agents[agent_a_indexer]
+        deja = index_status.get(agent_a_indexer, False)
+        if deja:
+            st.markdown(f'<div class="ev-notif success">L\'index <strong>{idx_name}</strong> existe deja.</div>', unsafe_allow_html=True)
+            forcer = st.checkbox("Forcer la re-indexation")
+        else:
+            st.markdown(f'<div class="ev-notif warn">L\'index <strong>{idx_name}</strong> n\'existe pas encore.</div>', unsafe_allow_html=True)
+            forcer = False
+    with col2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button(f"Indexer {agent_a_indexer}", use_container_width=True):
+            if deja and not forcer:
+                add_notif("Cochez 'Forcer la re-indexation'.", "warn")
+            else:
+                with st.spinner(f"Indexation de '{agent_a_indexer}'..."):
+                    try:
+                        creer_index(credential, idx_name)
+                        chunks, fichiers = indexer_pdfs(credential, embedding_client, dossier, idx_name, agent_a_indexer)
+                        add_notif(f"{fichiers} PDF · {chunks} chunks indexes", "success")
+                        st.cache_data.clear()
+                    except Exception as e:
+                        add_notif(f"Erreur : {str(e)}", "error")
+            st.rerun()
+        if st.button("Rafraichir", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
+ 
+    st.markdown("---")
+    st.markdown('<p class="ev-sec-title">Colonnes Excel requises</p>', unsafe_allow_html=True)
+    col_a, col_b, col_c = st.columns(3)
+    with col_a:
+        st.markdown('<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r-md);padding:0.9rem"><div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:6px">📦 stocks.xlsx</div><div style="font-size:11px;color:var(--text2);line-height:1.8;font-family:monospace">ID_Piece<br>Nom_Piece<br>Quantite<br>Seuil_Minimum<br>Date_Livraison_Prevue<br>Fournisseur<br>Modele_Voiture</div></div>', unsafe_allow_html=True)
+    with col_b:
+        st.markdown('<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r-md);padding:0.9rem"><div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:6px">🚗 commandes.xlsx</div><div style="font-size:11px;color:var(--text2);line-height:1.8;font-family:monospace">ID_Commande<br>Nom_Client<br>Modele_Voiture<br>Date_Commande<br>Statut<br>Montant_Total<br>Vendeur</div></div>', unsafe_allow_html=True)
+    with col_c:
+        st.markdown('<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r-md);padding:0.9rem"><div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:6px">⭐ clients.xlsx</div><div style="font-size:11px;color:var(--text2);line-height:1.8;font-family:monospace">ID_Client<br>Nom_Client<br>Email<br>Telephone<br>Nombre_Achats<br>Valeur_Totale<br>Derniere_Visite<br>Niveau_Fidelite</div></div>', unsafe_allow_html=True)
+ 
+# ── ONGLET RAGAS ──────────────────────────────────────────────────
+with tab_ragas:
+    st.markdown('<p class="ev-sec-title">Evaluation RAGAS — Metriques automatiques</p>', unsafe_allow_html=True)
+ 
+    st.markdown("""
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:1rem">
+      <div style="background:var(--accent-bg);border:1px solid var(--accent-border);border-radius:var(--r-md);padding:0.8rem;text-align:center">
+        <div style="font-size:18px;margin-bottom:4px">🎯</div>
+        <div style="font-size:12px;font-weight:600;color:var(--accent)">Faithfulness</div>
+        <div style="font-size:11px;color:var(--text2);margin-top:3px">La reponse est-elle fidele aux documents ?</div>
+      </div>
+      <div style="background:var(--blue-bg);border:1px solid var(--blue-bd);border-radius:var(--r-md);padding:0.8rem;text-align:center">
+        <div style="font-size:18px;margin-bottom:4px">💡</div>
+        <div style="font-size:12px;font-weight:600;color:var(--blue)">Answer Relevancy</div>
+        <div style="font-size:11px;color:var(--text2);margin-top:3px">La reponse repond-elle a la question ?</div>
+      </div>
+      <div style="background:var(--amber-bg);border:1px solid var(--amber-bd);border-radius:var(--r-md);padding:0.8rem;text-align:center">
+        <div style="font-size:18px;margin-bottom:4px">🔍</div>
+        <div style="font-size:12px;font-weight:600;color:var(--amber)">Context Precision</div>
+        <div style="font-size:11px;color:var(--text2);margin-top:3px">Les bons chunks ont-ils ete recuperes ?</div>
+      </div>
+      <div style="background:var(--purple-bg);border:1px solid var(--purple-bd);border-radius:var(--r-md);padding:0.8rem;text-align:center">
+        <div style="font-size:18px;margin-bottom:4px">📚</div>
+        <div style="font-size:12px;font-weight:600;color:var(--purple)">Context Recall</div>
+        <div style="font-size:11px;color:var(--text2);margin-top:3px">Tous les passages ont-ils ete trouves ?</div>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+ 
+    col1, col2 = st.columns([3,2])
+    with col1:
+        st.markdown('<p class="ev-sec-title">Questions de test</p>', unsafe_allow_html=True)
+        q1  = st.text_input("Question 1", placeholder="Ex: Conditions de leasing ?")
+        gt1 = st.text_area("Reponse attendue 1", height=70)
+        q2  = st.text_input("Question 2", placeholder="Ex: Ruptures de stock ?")
+        gt2 = st.text_area("Reponse attendue 2", height=70)
+    with col2:
+        st.markdown('<p class="ev-sec-title">Configuration</p>', unsafe_allow_html=True)
+        agent_eval = st.selectbox("Agent a evaluer", ["politiques","stocks","commandes","clients"],
+            format_func=lambda x: {"politiques":"📋 Politiques","stocks":"📦 Stocks","commandes":"🚗 Commandes","clients":"⭐ Fidelisation"}[x])
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("Lancer RAGAS", use_container_width=True):
+            questions     = [q for q in [q1,q2] if q]
+            ground_truths = [g for g in [gt1,gt2] if g]
+            if not questions:
+                add_notif("Ajoutez au moins une question.", "warn")
+                st.rerun()
+            else:
+                with st.spinner("Calcul des metriques RAGAS..."):
+                    try:
+                        from ragas import evaluate
+                        from ragas.metrics import faithfulness, answer_relevancy, context_precision, context_recall
+                        from datasets import Dataset
+                        answers, contexts = [], []
+                        for q in questions:
+                            r = orchestrer(q, agent_eval)
+                            answers.append(r["reponse"])
+                            contexts.append([r["reponse"]])
+                        results = evaluate(
+                            Dataset.from_dict({"question":questions,"answer":answers,"contexts":contexts,"ground_truth":ground_truths[:len(questions)]}),
+                            metrics=[faithfulness,answer_relevancy,context_precision,context_recall]
+                        )
+                        st.session_state.ragas_results = results
+                        add_notif("Evaluation RAGAS terminee !", "success")
+                    except ImportError:
+                        add_notif("pip install ragas datasets", "error")
+                    except Exception as e:
+                        add_notif(f"Erreur RAGAS : {str(e)}", "error")
+                st.rerun()
+ 
+    if "ragas_results" in st.session_state:
+        results = st.session_state.ragas_results
+        st.markdown("---")
+        st.markdown('<p class="ev-sec-title">Resultats RAGAS</p>', unsafe_allow_html=True)
+        scores = [
+            ("Faithfulness",      results.get("faithfulness",0),      "var(--accent)", "🎯"),
+            ("Answer Relevancy",  results.get("answer_relevancy",0),  "var(--blue)",   "💡"),
+            ("Context Precision", results.get("context_precision",0), "var(--amber)",  "🔍"),
+            ("Context Recall",    results.get("context_recall",0),    "var(--purple)", "📚"),
+        ]
+        cols = st.columns(4)
+        for i, (label, score, color, icone) in enumerate(scores):
+            score_pct = int(score * 100)
+            with cols[i]:
+                st.markdown(f"""
+                <div class="ev-score-card">
+                  <div style="font-size:1.5rem">{icone}</div>
+                  <div class="ev-score-val" style="color:{color}">{score:.2f}</div>
+                  <div class="ev-score-lbl">{label}</div>
+                  <div class="ev-score-bar"><div class="ev-score-fill" style="width:{score_pct}%;background:{color}"></div></div>
+                  <div style="font-size:10px;color:var(--text3);margin-top:4px">{'OK' if score>=0.8 else 'Moyen' if score>=0.6 else 'Faible'}</div>
+                </div>
+                """, unsafe_allow_html=True)
+ 
+# ── ONGLET LLM JUDGE ─────────────────────────────────────────────
+with tab_judge:
+    st.markdown('<p class="ev-sec-title">LLM as a Judge — GPT-4.5 evalue vos reponses</p>', unsafe_allow_html=True)
+ 
+    st.markdown("""
+    <div style="background:var(--accent-bg);border:1px solid var(--accent-border);border-radius:var(--r-lg);padding:1rem 1.2rem;margin-bottom:1rem;font-size:13px;color:var(--accent)">
+      <strong>Principe :</strong> GPT-4.5 joue le role d'un expert humain et evalue la reponse de l'agent sur 3 criteres avec un score et des explications detaillees.
+    </div>
+    """, unsafe_allow_html=True)
+ 
+    col1, col2 = st.columns([3,2])
+    with col1:
+        question_judge = st.text_input("Question a evaluer", placeholder="Ex: Quelle est la politique de remboursement ?")
+        agent_judge    = st.selectbox("Agent", ["politiques","stocks","commandes","clients"],
+            format_func=lambda x: {"politiques":"📋 Politiques","stocks":"📦 Stocks","commandes":"🚗 Commandes","clients":"⭐ Fidelisation"}[x],
+            key="agent_judge_select")
+    with col2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        lancer_judge = st.button("Evaluer avec GPT-4.5", use_container_width=True)
+ 
+    if lancer_judge:
+        if not question_judge.strip():
+            add_notif("Entrez une question a evaluer.", "warn")
+            st.rerun()
+        else:
+            with st.spinner("GPT-4.5 evalue la reponse..."):
+                try:
+                    r      = orchestrer(question_judge, agent_judge)
+                    client = get_agent_client()
+                    prompt = f"""Tu es un expert en evaluation de systemes RAG automobile.
+Evalue cette reponse. Retourne UNIQUEMENT un JSON valide :
+{{"fidelite":{{"score":0,"commentaire":""}},"pertinence":{{"score":0,"commentaire":""}},"completude":{{"score":0,"commentaire":""}},"verdict":"BON","suggestion":""}}
+Scores de 0 a 10. Verdict : BON (moy>=8), MOYEN (>=6), MAUVAIS (<6).
+QUESTION: {question_judge}
+REPONSE: {r['reponse'][:800]}"""
+ 
+                    async def eval_llm():
+                        a = client.as_agent(name="Judge", instructions="Tu evalues des reponses RAG. Reponds UNIQUEMENT en JSON valide.")
+                        return await a.run(prompt)
+ 
+                    resp    = asyncio.get_event_loop().run_until_complete(eval_llm())
+                    raw     = str(resp).replace("```json","").replace("```","").strip()
+                    start_j = raw.find("{")
+                    end_j   = raw.rfind("}") + 1
+                    verdict = json.loads(raw[start_j:end_j])
+                    st.session_state.judge_result = {"verdict":verdict,"question":question_judge,"reponse":r["reponse"],"agent":r["agent"]}
+                    add_notif("Evaluation LLM terminee !", "success")
+                except Exception as e:
+                    add_notif(f"Erreur : {str(e)}", "error")
+            st.rerun()
+ 
+    if "judge_result" in st.session_state:
+        jr      = st.session_state.judge_result
+        verdict = jr["verdict"]
+        v_class = {"BON":"bon","MOYEN":"moyen","MAUVAIS":"mauvais"}.get(verdict.get("verdict","MOYEN"),"moyen")
+ 
+        st.markdown("---")
+        st.markdown(f"""
+        <div class="ev-q-block">
+          <div class="ev-q-label">Question evaluee</div>
+          <div class="ev-q-text">{jr["question"]}</div>
+          <div class="ev-q-rep">{jr["reponse"][:400]}{"..." if len(jr["reponse"])>400 else ""}</div>
+        </div>
+        <div class="ev-verdict {v_class}">
+          <div class="ev-verdict-title">Verdict : {verdict.get("verdict","?")} </div>
+          <div class="ev-verdict-body">Suggestion : {verdict.get("suggestion","")}</div>
+        </div>
+        """, unsafe_allow_html=True)
+ 
+        scores_judge = [
+            ("Fidelite",   verdict.get("fidelite",{}),   "var(--accent)"),
+            ("Pertinence", verdict.get("pertinence",{}), "var(--blue)"),
+            ("Completude", verdict.get("completude",{}), "var(--amber)"),
+        ]
+        cols = st.columns(3)
+        for i, (label, data, color) in enumerate(scores_judge):
+            score     = data.get("score", 0)
+            comment   = data.get("commentaire","")
+            score_pct = int(score * 10)
+            with cols[i]:
+                st.markdown(f"""
+                <div class="ev-score-card">
+                  <div class="ev-score-val" style="color:{color}">{score}<span style="font-size:1rem;color:var(--text3)">/10</span></div>
+                  <div class="ev-score-lbl">{label}</div>
+                  <div class="ev-score-bar"><div class="ev-score-fill" style="width:{score_pct}%;background:{color}"></div></div>
+                  <div style="font-size:11px;color:var(--text2);margin-top:6px;line-height:1.5">{comment}</div>
+                </div>
+                """, unsafe_allow_html=True)
+ 
+================================================================================
+FIN DU FICHIER
+================================================================================
+ 
