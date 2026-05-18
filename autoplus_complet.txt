@@ -668,13 +668,24 @@ async def agent_fidelisation(question: str) -> dict:
 
 def run_agent(agent_func, question: str) -> dict:
     """Lance un agent async depuis du code synchrone Streamlit"""
+    import nest_asyncio
+    import asyncio
+    import concurrent.futures
+
     try:
-        import nest_asyncio
-        nest_asyncio.apply()
-        loop = asyncio.get_event_loop()
-        return loop.run_until_complete(agent_func(question))
+        # Methode 1 — thread separe (evite le conflit avec la boucle Streamlit)
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            future = pool.submit(asyncio.run, agent_func(question))
+            return future.result(timeout=60)
+
     except Exception as e:
-        return {"agent": "erreur", "reponse": f"Erreur agent : {str(e)}", "tokens": 0, "alertes": [], "donnees": []}
+        return {
+            "agent"  : "erreur",
+            "reponse": f"Erreur agent : {str(e)}",
+            "tokens" : 0,
+            "alertes": [],
+            "donnees": []
+        }
 
 ================================================================================
 FICHIER 9 : backend/orchestrateur.py
