@@ -2460,15 +2460,29 @@ with tab_ragas:
         # Compatibilite nouvelle version RAGAS — EvaluationResult
         def get_score(results, key):
             try:
-                val = results[key]
-                if hasattr(val, '__float__'):
-                    return float(val)
                 import pandas as pd
+                import numpy as np
+        
+                val = results[key]
+        
+                # Series pandas → moyenne
                 if isinstance(val, pd.Series):
-                    return float(val.mean())
-                return float(val)
-            except:
-                return 0.0
+                    return round(float(val.mean()), 2)
+        
+                # numpy float
+                if isinstance(val, (np.floating, np.float64)):
+                    return round(float(val), 2)
+        
+                # float normal
+                return round(float(val), 2)
+
+    except Exception as e:
+        # Debug — affiche le type pour diagnostiquer
+        try:
+            st.write(f"Debug {key}: type={type(results[key])}, val={results[key]}")
+        except:
+            pass
+        return 0.0
 
         scores = [
             ("Faithfulness",      get_score(results, "faithfulness"),      "green",  "🎯"),
