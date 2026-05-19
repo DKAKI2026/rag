@@ -21,8 +21,8 @@ pages/
 photos/                      ← mettez logo.png ici
 
 Ajouts .env :
-    SQL_SERVER=sql-dev-cacn-team013-hack.database.windows.net
-    SQL_DATABASE=sqldb-dev-cacn-team013-hack-ai
+    SQL_SERVER=sql-d
+    SQL_DATABASE=sqldb-d
     SQL_DRIVER=ODBC Driver 18 for SQL Server
 
 Ajouts requirements.txt :
