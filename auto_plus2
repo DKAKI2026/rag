@@ -1,0 +1,909 @@
+================================================================================
+AUTOPLUS V2 — CSS SEPARES + PAGES PROPRES
+================================================================================
+Structure des nouveaux fichiers :
+
+frontend/styles/
+├── gestion_donnees_css.py   ← CSS page Gestion Donnees
+└── azure_sql_css.py         ← CSS page Azure SQL
+
+components/
+├── __init__.py              ← fichier vide
+└── navbar.py                ← navbar avec logo
+
+backend/utils/
+└── sql.py                   ← connexion + CRUD Azure SQL
+
+pages/
+├── 3_Gestion_Donnees.py     ← CRUD (importe son CSS)
+└── 4_Azure_SQL.py           ← config SQL (importe son CSS)
+
+photos/                      ← mettez logo.png ici
+
+Ajouts .env :
+    SQL_SERVER=sql-dev-cacn-team013-hack.database.windows.net
+    SQL_DATABASE=sqldb-dev-cacn-team013-hack-ai
+    SQL_DRIVER=ODBC Driver 18 for SQL Server
+
+Ajouts requirements.txt :
+    pyodbc
+    langchain-openai
+
+================================================================================
+FICHIER 1 : frontend/styles/gestion_donnees_css.py
+================================================================================
+
+# ==============================================================================
+# FICHIER : frontend/styles/gestion_donnees_css.py
+# ROLE    : CSS de la page Gestion des Donnees
+# USAGE   : from frontend.styles.gestion_donnees_css import GESTION_CSS
+#           st.markdown(GESTION_CSS, unsafe_allow_html=True)
+# ==============================================================================
+
+GESTION_CSS = """
+<style>
+.gd-hero {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  padding: 1.5rem 2rem;
+  margin-bottom: 1rem;
+  box-shadow: var(--shadow-sm);
+}
+.gd-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-border);
+  border-radius: 99px;
+  padding: 4px 13px;
+  margin-bottom: 0.75rem;
+}
+.gd-hero h1 {
+  font-family: var(--font-d);
+  font-weight: 800;
+  font-size: 1.75rem;
+  color: var(--text);
+  margin-bottom: 0.4rem;
+}
+.gd-hero h1 em { font-style: italic; color: var(--accent); }
+.gd-hero-desc  { font-size: 13.5px; color: var(--text2); }
+
+.gd-sec-title {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text3);
+  margin-bottom: 8px;
+}
+.gd-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 99px;
+}
+.gd-badge.green  { background: var(--accent-bg); color: var(--accent); }
+.gd-badge.red    { background: var(--red-bg);    color: var(--red); }
+.gd-badge.amber  { background: var(--amber-bg);  color: var(--amber); }
+.gd-badge.blue   { background: var(--blue-bg);   color: var(--blue); }
+
+.gd-notif {
+  border-radius: var(--r-md);
+  padding: 0.65rem 1rem;
+  margin-bottom: 0.5rem;
+  font-size: 12.5px;
+  border-left: 3px solid;
+}
+.gd-notif.success { background: var(--accent-bg); border-color: var(--accent-mid); color: var(--accent); }
+.gd-notif.error   { background: var(--red-bg);    border-color: var(--red);        color: var(--red); }
+.gd-notif.warn    { background: var(--amber-bg);  border-color: var(--amber);      color: var(--amber); }
+
+.gd-import-info {
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--r-lg);
+  padding: 1rem 1.2rem;
+  margin-bottom: 1rem;
+  font-size: 13px;
+  color: var(--accent);
+}
+.gd-stats-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; text-align: center; }
+.gd-stat-val   { font-family: var(--font-d); font-size: 1.8rem; font-weight: 800; }
+.gd-stat-lbl   { font-size: 11px; color: var(--text3); text-transform: uppercase; letter-spacing: 0.5px; }
+</style>
+"""
+
+================================================================================
+FICHIER 2 : frontend/styles/azure_sql_css.py
+================================================================================
+
+# ==============================================================================
+# FICHIER : frontend/styles/azure_sql_css.py
+# ROLE    : CSS de la page Azure SQL
+# USAGE   : from frontend.styles.azure_sql_css import SQL_CSS
+#           st.markdown(SQL_CSS, unsafe_allow_html=True)
+# ==============================================================================
+
+SQL_CSS = """
+<style>
+.sql-hero {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  padding: 1.5rem 2rem;
+  margin-bottom: 1rem;
+  box-shadow: var(--shadow-sm);
+}
+.sql-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--blue);
+  background: var(--blue-bg);
+  border: 1px solid var(--blue-bd);
+  border-radius: 99px;
+  padding: 4px 13px;
+  margin-bottom: 0.75rem;
+}
+.sql-hero h1 {
+  font-family: var(--font-d);
+  font-weight: 800;
+  font-size: 1.75rem;
+  color: var(--text);
+  margin-bottom: 0.4rem;
+}
+.sql-hero h1 em { font-style: italic; color: var(--blue); }
+.sql-hero-desc  { font-size: 13.5px; color: var(--text2); }
+
+.sql-sec-title {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text3);
+  margin-bottom: 8px;
+}
+.sql-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 99px;
+}
+.sql-badge.green { background: var(--accent-bg); color: var(--accent); }
+.sql-badge.red   { background: var(--red-bg);    color: var(--red); }
+.sql-badge.blue  { background: var(--blue-bg);   color: var(--blue); }
+
+.sql-conn-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 1.2rem;
+  box-shadow: var(--shadow-sm);
+}
+.sql-info-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.sql-info-row:last-child { border-bottom: none; }
+.sql-info-label { color: var(--text3); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+.sql-info-val   { color: var(--text); font-weight: 500; font-family: monospace; font-size: 12px; }
+
+.sql-table-stat { background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-md); padding: 1rem; text-align: center; }
+.sql-table-stat-val { font-family: var(--font-d); font-size: 1.8rem; font-weight: 800; }
+.sql-table-stat-lbl { font-size: 10.5px; color: var(--text3); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 2px; }
+
+.sql-query-box {
+  background: #0f1f16;
+  color: #22c55e;
+  border-radius: var(--r-md);
+  padding: 1rem;
+  font-family: monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  margin: 0.5rem 0;
+}
+.sql-warning {
+  background: var(--amber-bg);
+  border: 1px solid var(--amber-bd);
+  border-radius: var(--r-md);
+  padding: 0.7rem 1rem;
+  font-size: 12px;
+  color: var(--amber);
+  margin-bottom: 0.75rem;
+}
+.sql-notif {
+  border-radius: var(--r-md);
+  padding: 0.65rem 1rem;
+  margin-bottom: 0.5rem;
+  font-size: 12.5px;
+  border-left: 3px solid;
+}
+.sql-notif.success { background: var(--accent-bg); border-color: var(--accent-mid); color: var(--accent); }
+.sql-notif.error   { background: var(--red-bg);    border-color: var(--red);        color: var(--red); }
+.sql-notif.warn    { background: var(--amber-bg);  border-color: var(--amber);      color: var(--amber); }
+</style>
+"""
+
+================================================================================
+FICHIER 3 : components/__init__.py  (fichier vide)
+================================================================================
+
+# components
+
+================================================================================
+FICHIER 4 : components/navbar.py
+================================================================================
+
+# ==============================================================================
+# FICHIER : components/navbar.py
+# ROLE    : Barre de navigation superieure avec logo
+# USAGE   : from components.navbar import get_navbar, inject_base_css
+#           st.markdown(inject_base_css(), unsafe_allow_html=True)
+#           st.markdown(get_navbar("Dashboard"), unsafe_allow_html=True)
+# ==============================================================================
+
+import os
+import base64
+
+# ==============================================================================
+# SECTION 1 : LIENS DE NAVIGATION
+# → Modifiez selon vos pages
+# ==============================================================================
+NAVBAR_ITEMS = [
+    {"label": "Dashboard",       "icon": "🏠", "page": "/Dashboard"},
+    {"label": "Gestion Donnees", "icon": "📝", "page": "/Gestion_Donnees"},
+    {"label": "Azure SQL",       "icon": "🗄️", "page": "/Azure_SQL"},
+    {"label": "Evaluation",      "icon": "🔬", "page": "/Evaluation_et_Index"},
+]
+
+# ==============================================================================
+# SECTION 2 : LOGO
+# → Mettez votre logo dans photos/logo.png ou photos/logo.jpg
+# ==============================================================================
+def charger_logo() -> str:
+    for ext in ["png", "jpg", "jpeg", "PNG", "JPG"]:
+        chemin = f"photos/logo.{ext}"
+        if os.path.exists(chemin):
+            with open(chemin, "rb") as f:
+                data = base64.b64encode(f.read()).decode()
+            return f"data:image/{ext.lower()};base64,{data}"
+    return None
+
+NAVBAR_CSS = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=Fraunces:ital,wght@0,600;0,800;1,600&display=swap');
+
+.ap-navbar {
+  background: rgba(255,255,255,0.97);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid #cce0d3;
+  padding: 0 1.75rem;
+  height: 58px;
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  position: sticky;
+  top: 0;
+  z-index: 999;
+  box-shadow: 0 1px 3px rgba(22,101,52,0.08);
+  margin-bottom: 1.2rem;
+  border-radius: 0 0 14px 14px;
+}
+.ap-nav-logo { display:flex; align-items:center; gap:10px; text-decoration:none; flex-shrink:0; }
+.ap-nav-logo-img { height:36px; width:auto; border-radius:8px; object-fit:contain; }
+.ap-nav-logo-placeholder { width:36px; height:36px; background:#166534; border-radius:10px; display:flex; align-items:center; justify-content:center; color:#fff; font-size:18px; box-shadow:0 2px 8px rgba(22,101,52,0.35); flex-shrink:0; }
+.ap-nav-brand { font-family:'Fraunces',Georgia,serif; font-weight:800; font-size:18px; color:#0f1f16; letter-spacing:-0.4px; }
+.ap-nav-brand em { font-style:italic; color:#166534; }
+.ap-nav-links { display:flex; align-items:center; gap:2px; flex:1; }
+.ap-nav-link { display:inline-flex; align-items:center; gap:6px; text-decoration:none; font-size:13px; font-weight:500; color:#3d6350; padding:6px 13px; border-radius:10px; transition:background 0.15s,color 0.15s; font-family:'DM Sans',sans-serif; cursor:pointer; }
+.ap-nav-link:hover  { background:#eaf3ed; color:#0f1f16; }
+.ap-nav-link.active { background:#dcfce7; color:#166534; font-weight:600; }
+.ap-nav-right { display:flex; align-items:center; gap:10px; flex-shrink:0; }
+.ap-nav-badge { display:inline-flex; align-items:center; gap:5px; font-size:11px; font-weight:600; color:#166534; background:#dcfce7; border:1px solid #86efac; border-radius:99px; padding:4px 12px; font-family:'DM Sans',sans-serif; }
+.ap-nav-badge.alert { color:#b91c1c; background:#fee2e2; border-color:#fca5a5; }
+.ap-nav-dot { width:7px; height:7px; background:#16a34a; border-radius:50%; animation:navpulse 2s infinite; }
+.ap-nav-dot.red { background:#b91c1c; }
+@keyframes navpulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.4;transform:scale(0.8)} }
+#MainMenu {visibility:hidden;} footer {visibility:hidden;} header {visibility:hidden;}
+</style>
+"""
+
+def get_navbar(page_active: str = "", nb_alertes: int = 0) -> str:
+    """Genere le HTML de la navbar avec logo"""
+    logo_src = charger_logo()
+    logo_html = (
+        f'<img src="{logo_src}" class="ap-nav-logo-img" alt="Logo">'
+        if logo_src else
+        '<div class="ap-nav-logo-placeholder">🚗</div>'
+    )
+    liens_html = "".join([
+        f'<a href="{item["page"]}" class="ap-nav-link {"active" if page_active.lower() in item["label"].lower() else ""}">{item["icon"]} {item["label"]}</a>'
+        for item in NAVBAR_ITEMS
+    ])
+    badge_html = (
+        f'<span class="ap-nav-badge alert"><span class="ap-nav-dot red"></span>{nb_alertes} alertes</span>'
+        if nb_alertes > 0 else
+        '<span class="ap-nav-badge"><span class="ap-nav-dot"></span>Systeme operationnel</span>'
+    )
+    return f"""
+    {NAVBAR_CSS}
+    <nav class="ap-navbar">
+        <a class="ap-nav-logo" href="/Dashboard">{logo_html}<span class="ap-nav-brand">Auto<em>Plus</em></span></a>
+        <div class="ap-nav-links">{liens_html}</div>
+        <div class="ap-nav-right">{badge_html}</div>
+    </nav>
+    """
+
+def inject_base_css() -> str:
+    """CSS de base avec les variables CSS + reset Streamlit"""
+    return """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=Fraunces:ital,wght@0,600;0,800;1,600&display=swap');
+    :root {
+      --bg:#f2f7f4; --surface:#ffffff; --surface2:#eaf3ed; --surface3:#d6ebe0;
+      --border:#cce0d3; --border2:#aecfbb;
+      --text:#0f1f16; --text2:#3d6350; --text3:#7aaa8e;
+      --accent:#166534; --accent-mid:#16a34a;
+      --accent-bg:#dcfce7; --accent-border:#86efac;
+      --amber:#d97706; --amber-bg:#fef3c7; --amber-bd:#fcd34d;
+      --blue:#1d4ed8; --blue-bg:#dbeafe; --blue-bd:#93c5fd;
+      --red:#b91c1c; --red-bg:#fee2e2; --red-bd:#fca5a5;
+      --purple:#6d28d9; --purple-bg:#ede9fe; --purple-bd:#c4b5fd;
+      --r-sm:6px; --r-md:10px; --r-lg:14px; --r-xl:20px;
+      --font-d:'Fraunces',Georgia,serif; --font-b:'DM Sans',sans-serif;
+      --shadow-sm:0 1px 3px rgba(22,101,52,0.08);
+      --shadow-md:0 4px 16px rgba(22,101,52,0.12);
+    }
+    html, body, [class*="css"] { font-family:var(--font-b) !important; background-color:var(--bg) !important; color:var(--text) !important; }
+    section[data-testid="stSidebar"] { background:var(--surface) !important; border-right:1px solid var(--border) !important; }
+    .stButton button { background:var(--accent) !important; color:#fff !important; border:none !important; border-radius:var(--r-md) !important; font-family:var(--font-b) !important; font-weight:600 !important; font-size:13px !important; transition:background 0.15s,transform 0.1s !important; }
+    .stButton button:hover { background:#14532d !important; transform:translateY(-1px) !important; box-shadow:0 4px 12px rgba(22,101,52,0.35) !important; }
+    .stTextInput input, .stTextArea textarea { background:var(--surface) !important; border:1px solid var(--border2) !important; border-radius:var(--r-md) !important; color:var(--text) !important; font-family:var(--font-b) !important; }
+    .stTextInput input:focus, .stTextArea textarea:focus { border-color:var(--accent) !important; box-shadow:0 0 0 2px rgba(22,101,52,0.1) !important; }
+    .stTabs [data-baseweb="tab-list"] { background:var(--surface2) !important; border-radius:var(--r-lg) !important; padding:4px !important; }
+    .stTabs [data-baseweb="tab"] { color:var(--text2) !important; font-family:var(--font-b) !important; font-weight:500 !important; border-radius:var(--r-md) !important; }
+    .stTabs [aria-selected="true"] { background:var(--surface) !important; color:var(--accent) !important; font-weight:600 !important; }
+    .stDataFrame { border:1px solid var(--border) !important; border-radius:var(--r-lg) !important; }
+    hr { border-color:var(--border) !important; }
+    ::-webkit-scrollbar { width:5px; }
+    ::-webkit-scrollbar-track { background:var(--surface2); }
+    ::-webkit-scrollbar-thumb { background:var(--border2); border-radius:99px; }
+    </style>
+    """
+
+================================================================================
+FICHIER 5 : backend/utils/sql.py
+================================================================================
+
+# ==============================================================================
+# FICHIER : backend/utils/sql.py
+# ROLE    : Connexion et operations CRUD Azure SQL Database
+# USAGE   : from backend.utils.sql import lire_table, ajouter_ligne, ...
+# ==============================================================================
+
+import os
+import pandas as pd
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# ==============================================================================
+# SECTION 1 : CONFIGURATION SQL
+# → Copiez depuis portal.azure.com > SQL Database > Chaines de connexion
+# ==============================================================================
+SQL_SERVER   = os.getenv("SQL_SERVER",   "sql-dev-cacn-team013-hack.database.windows.net")
+SQL_DATABASE = os.getenv("SQL_DATABASE", "sqldb-dev-cacn-team013-hack-ai")
+SQL_DRIVER   = os.getenv("SQL_DRIVER",   "ODBC Driver 18 for SQL Server")
+
+# ==============================================================================
+# SECTION 2 : NOMS DES TABLES
+# → Changez si vous utilisez des noms differents
+# ==============================================================================
+TABLE_STOCKS    = "stocks"
+TABLE_COMMANDES = "commandes"
+TABLE_CLIENTS   = "clients"
+
+def get_connection():
+    """Connexion Azure SQL avec ManagedIdentityCredential"""
+    import pyodbc
+    from azure.identity import ManagedIdentityCredential
+    import struct
+    credential   = ManagedIdentityCredential()
+    token        = credential.get_token("https://database.windows.net/.default")
+    token_bytes  = token.token.encode("UTF-16-LE")
+    token_struct = struct.pack(f"<I{len(token_bytes)}s", len(token_bytes), token_bytes)
+    conn_str = (
+        f"DRIVER={{{SQL_DRIVER}}};"
+        f"SERVER={SQL_SERVER};"
+        f"DATABASE={SQL_DATABASE};"
+        f"Encrypt=yes;"
+        f"TrustServerCertificate=no;"
+    )
+    return pyodbc.connect(conn_str, attrs_before={1256: token_struct})
+
+def tester_connexion() -> bool:
+    try:
+        conn = get_connection()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"Erreur SQL : {e}")
+        return False
+
+def initialiser_tables():
+    """Cree les 3 tables si elles n'existent pas — a lancer UNE SEULE FOIS"""
+    conn   = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+    IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='stocks' AND xtype='U')
+    CREATE TABLE stocks (
+        ID_Piece              NVARCHAR(50)  PRIMARY KEY,
+        Nom_Piece             NVARCHAR(200) NOT NULL,
+        Quantite              INT           NOT NULL DEFAULT 0,
+        Seuil_Minimum         INT           NOT NULL DEFAULT 5,
+        Date_Livraison_Prevue DATE          NULL,
+        Fournisseur           NVARCHAR(200) NULL,
+        Modele_Voiture        NVARCHAR(200) NULL,
+        Date_Mise_A_Jour      DATETIME      DEFAULT GETDATE()
+    )""")
+    cursor.execute("""
+    IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='commandes' AND xtype='U')
+    CREATE TABLE commandes (
+        ID_Commande      NVARCHAR(50)   PRIMARY KEY,
+        Nom_Client       NVARCHAR(200)  NOT NULL,
+        Modele_Voiture   NVARCHAR(200)  NOT NULL,
+        Date_Commande    DATE           NOT NULL,
+        Statut           NVARCHAR(50)   NOT NULL DEFAULT 'En cours',
+        Montant_Total    DECIMAL(10,2)  NOT NULL DEFAULT 0,
+        Vendeur          NVARCHAR(200)  NULL,
+        Date_Mise_A_Jour DATETIME       DEFAULT GETDATE()
+    )""")
+    cursor.execute("""
+    IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='clients' AND xtype='U')
+    CREATE TABLE clients (
+        ID_Client        NVARCHAR(50)   PRIMARY KEY,
+        Nom_Client       NVARCHAR(200)  NOT NULL,
+        Email            NVARCHAR(200)  NULL,
+        Telephone        NVARCHAR(50)   NULL,
+        Nombre_Achats    INT            NOT NULL DEFAULT 0,
+        Valeur_Totale    DECIMAL(12,2)  NOT NULL DEFAULT 0,
+        Derniere_Visite  DATE           NULL,
+        Niveau_Fidelite  NVARCHAR(50)   NOT NULL DEFAULT 'Bronze',
+        Date_Mise_A_Jour DATETIME       DEFAULT GETDATE()
+    )""")
+    conn.commit()
+    conn.close()
+    print("Tables initialisees !")
+
+def lire_table(table: str) -> pd.DataFrame:
+    try:
+        conn = get_connection()
+        df   = pd.read_sql(f"SELECT * FROM {table}", conn)
+        conn.close()
+        return df
+    except Exception as e:
+        print(f"Erreur lecture {table} : {e}")
+        return pd.DataFrame()
+
+def ajouter_ligne(table: str, donnees: dict) -> bool:
+    try:
+        conn   = get_connection()
+        cursor = conn.cursor()
+        cols   = ", ".join(donnees.keys())
+        ph     = ", ".join(["?" for _ in donnees])
+        cursor.execute(f"INSERT INTO {table} ({cols}) VALUES ({ph})", list(donnees.values()))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"Erreur ajout : {e}")
+        return False
+
+def modifier_ligne(table: str, cle: str, id_val: str, donnees: dict) -> bool:
+    try:
+        conn   = get_connection()
+        cursor = conn.cursor()
+        sets   = ", ".join([f"{k} = ?" for k in donnees.keys()])
+        vals   = list(donnees.values()) + [id_val]
+        cursor.execute(f"UPDATE {table} SET {sets}, Date_Mise_A_Jour = GETDATE() WHERE {cle} = ?", vals)
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"Erreur modification : {e}")
+        return False
+
+def supprimer_ligne(table: str, cle: str, id_val: str) -> bool:
+    try:
+        conn   = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(f"DELETE FROM {table} WHERE {cle} = ?", [id_val])
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"Erreur suppression : {e}")
+        return False
+
+def importer_depuis_excel(table: str, fichier: str, cle: str) -> tuple:
+    try:
+        df      = pd.read_excel(fichier)
+        inseres = 0
+        erreurs = 0
+        for _, row in df.iterrows():
+            donnees = {k: (None if pd.isna(v) else v) for k, v in row.items()}
+            if ajouter_ligne(table, donnees):
+                inseres += 1
+            else:
+                erreurs += 1
+        return inseres, erreurs
+    except Exception as e:
+        return 0, 0
+
+================================================================================
+FICHIER 6 : pages/3_Gestion_Donnees.py
+================================================================================
+
+# ==============================================================================
+# FICHIER : pages/3_Gestion_Donnees.py
+# ROLE    : CRUD complet Stocks / Commandes / Clients
+# CSS     : importe depuis frontend/styles/gestion_donnees_css.py
+# ==============================================================================
+
+import streamlit as st
+import pandas as pd
+from datetime import date
+
+from backend.utils.sql import (
+    lire_table, ajouter_ligne, modifier_ligne, supprimer_ligne,
+    initialiser_tables, tester_connexion, importer_depuis_excel,
+    TABLE_STOCKS, TABLE_COMMANDES, TABLE_CLIENTS
+)
+from backend.config.settings             import COMPANY_NAME
+from components.navbar                   import get_navbar, inject_base_css
+from frontend.styles.gestion_donnees_css import GESTION_CSS
+
+st.set_page_config(page_title=f"{COMPANY_NAME} — Gestion", page_icon="📝", layout="wide", initial_sidebar_state="collapsed")
+st.markdown(inject_base_css(), unsafe_allow_html=True)
+st.markdown(GESTION_CSS,       unsafe_allow_html=True)
+nb_alertes = len(st.session_state.get("alertes_stocks", []))
+st.markdown(get_navbar("Gestion Donnees", nb_alertes), unsafe_allow_html=True)
+
+if "gd_notifs" not in st.session_state: st.session_state.gd_notifs = []
+if "sql_ok"    not in st.session_state: st.session_state.sql_ok    = None
+
+def add_notif(msg, kind="success"):
+    st.session_state.gd_notifs.append({"msg": msg, "kind": kind})
+    if len(st.session_state.gd_notifs) > 3:
+        st.session_state.gd_notifs.pop(0)
+
+if st.session_state.sql_ok is None:
+    st.session_state.sql_ok = tester_connexion()
+
+sql_badge = '<span class="gd-badge green">SQL Connecte</span>' if st.session_state.sql_ok else '<span class="gd-badge red">SQL Deconnecte</span>'
+
+st.markdown(f"""
+<div class="gd-hero">
+  <div class="gd-eyebrow">CRUD — Azure SQL Database</div>
+  <h1>Gestion des <em>Donnees</em></h1>
+  <p class="gd-hero-desc">Ajoutez, modifiez et supprimez vos stocks, commandes et clients. {sql_badge}</p>
+</div>
+""", unsafe_allow_html=True)
+
+for n in st.session_state.gd_notifs:
+    st.markdown(f'<div class="gd-notif {n["kind"]}">{n["msg"]}</div>', unsafe_allow_html=True)
+
+if not st.session_state.sql_ok:
+    st.error("Impossible de se connecter a Azure SQL.")
+    if st.button("Reessayer"):
+        st.session_state.sql_ok = tester_connexion()
+        st.rerun()
+    st.stop()
+
+if st.button("Initialiser les tables SQL (premiere fois)"):
+    with st.spinner("Creation..."):
+        try:
+            initialiser_tables()
+            add_notif("Tables creees !", "success")
+        except Exception as e:
+            add_notif(f"Erreur : {e}", "error")
+    st.rerun()
+
+tab_stocks, tab_commandes, tab_clients, tab_import = st.tabs(["Stocks","Commandes","Clients","Import Excel"])
+
+# ── STOCKS ────────────────────────────────────────────────────────
+with tab_stocks:
+    cl, cf = st.columns([3,2], gap="medium")
+    with cl:
+        st.markdown('<p class="gd-sec-title">Liste</p>', unsafe_allow_html=True)
+        if st.button("Actualiser", key="ref_s"): st.rerun()
+        df = lire_table(TABLE_STOCKS)
+        if df.empty: st.info("Aucun stock.")
+        else:
+            st.dataframe(df, use_container_width=True, height=400)
+            st.markdown('<p class="gd-sec-title">Supprimer</p>', unsafe_allow_html=True)
+            c1,c2 = st.columns([3,1])
+            with c1: id_del = st.selectbox("Piece", df["ID_Piece"].tolist(), key="del_s")
+            with c2:
+                st.markdown("<br>", unsafe_allow_html=True)
+                if st.button("Supprimer", key="btn_del_s"):
+                    ok = supprimer_ligne(TABLE_STOCKS,"ID_Piece",id_del)
+                    add_notif(f"{id_del} supprimee" if ok else "Erreur", "success" if ok else "error")
+                    st.rerun()
+    with cf:
+        st.markdown('<p class="gd-sec-title">Ajouter / Modifier</p>', unsafe_allow_html=True)
+        mode = st.radio("Mode",["Ajouter","Modifier"],horizontal=True,key="mode_s")
+        with st.form("form_s"):
+            id_p = st.text_input("ID Piece *",  placeholder="P001")
+            nom  = st.text_input("Nom piece *", placeholder="Filtre a huile")
+            qte  = st.number_input("Quantite",  min_value=0, value=0)
+            seu  = st.number_input("Seuil min", min_value=0, value=5)
+            dliv = st.date_input("Date livraison", value=None)
+            fou  = st.text_input("Fournisseur")
+            mod  = st.text_input("Modele voiture")
+            sub  = st.form_submit_button(mode, use_container_width=True)
+        if sub:
+            if not id_p or not nom: add_notif("ID et Nom obligatoires.","warn")
+            else:
+                d = {"Nom_Piece":nom,"Quantite":qte,"Seuil_Minimum":seu,"Date_Livraison_Prevue":str(dliv) if dliv else None,"Fournisseur":fou or None,"Modele_Voiture":mod or None}
+                if mode=="Ajouter": d["ID_Piece"]=id_p; ok=ajouter_ligne(TABLE_STOCKS,d)
+                else: ok=modifier_ligne(TABLE_STOCKS,"ID_Piece",id_p,d)
+                add_notif(f"Piece {id_p} {'ajoutee' if mode=='Ajouter' else 'modifiee'} !" if ok else "Erreur","success" if ok else "error")
+            st.rerun()
+
+# ── COMMANDES ─────────────────────────────────────────────────────
+with tab_commandes:
+    cl, cf = st.columns([3,2], gap="medium")
+    with cl:
+        st.markdown('<p class="gd-sec-title">Liste</p>', unsafe_allow_html=True)
+        if st.button("Actualiser", key="ref_c"): st.rerun()
+        df = lire_table(TABLE_COMMANDES)
+        if df.empty: st.info("Aucune commande.")
+        else:
+            st.dataframe(df, use_container_width=True, height=400)
+            st.markdown('<p class="gd-sec-title">Supprimer</p>', unsafe_allow_html=True)
+            c1,c2 = st.columns([3,1])
+            with c1: id_del = st.selectbox("Commande", df["ID_Commande"].tolist(), key="del_c")
+            with c2:
+                st.markdown("<br>", unsafe_allow_html=True)
+                if st.button("Supprimer", key="btn_del_c"):
+                    ok = supprimer_ligne(TABLE_COMMANDES,"ID_Commande",id_del)
+                    add_notif(f"{id_del} supprimee" if ok else "Erreur","success" if ok else "error")
+                    st.rerun()
+    with cf:
+        st.markdown('<p class="gd-sec-title">Ajouter / Modifier</p>', unsafe_allow_html=True)
+        mode = st.radio("Mode",["Ajouter","Modifier"],horizontal=True,key="mode_c")
+        with st.form("form_c"):
+            id_c = st.text_input("ID Commande *", placeholder="CMD-2026-001")
+            cli  = st.text_input("Nom client *",  placeholder="Jean Tremblay")
+            modv = st.text_input("Modele voiture *", placeholder="Honda Civic 2026")
+            datc = st.date_input("Date commande", value=date.today())
+            stat = st.selectbox("Statut",["En cours","Confirme","Livre","Annule"])
+            mont = st.number_input("Montant ($)", min_value=0.0, value=0.0, step=100.0)
+            vend = st.text_input("Vendeur")
+            sub  = st.form_submit_button(mode, use_container_width=True)
+        if sub:
+            if not id_c or not cli or not modv: add_notif("ID, Client et Modele obligatoires.","warn")
+            else:
+                d = {"Nom_Client":cli,"Modele_Voiture":modv,"Date_Commande":str(datc),"Statut":stat,"Montant_Total":mont,"Vendeur":vend or None}
+                if mode=="Ajouter": d["ID_Commande"]=id_c; ok=ajouter_ligne(TABLE_COMMANDES,d)
+                else: ok=modifier_ligne(TABLE_COMMANDES,"ID_Commande",id_c,d)
+                add_notif(f"Commande {id_c} {'ajoutee' if mode=='Ajouter' else 'modifiee'} !" if ok else "Erreur","success" if ok else "error")
+            st.rerun()
+
+# ── CLIENTS ───────────────────────────────────────────────────────
+with tab_clients:
+    cl, cf = st.columns([3,2], gap="medium")
+    with cl:
+        st.markdown('<p class="gd-sec-title">Liste</p>', unsafe_allow_html=True)
+        if st.button("Actualiser", key="ref_cl"): st.rerun()
+        df = lire_table(TABLE_CLIENTS)
+        if df.empty: st.info("Aucun client.")
+        else:
+            st.dataframe(df, use_container_width=True, height=400)
+            st.markdown('<p class="gd-sec-title">Supprimer</p>', unsafe_allow_html=True)
+            c1,c2 = st.columns([3,1])
+            with c1: id_del = st.selectbox("Client", df["ID_Client"].tolist(), key="del_cl")
+            with c2:
+                st.markdown("<br>", unsafe_allow_html=True)
+                if st.button("Supprimer", key="btn_del_cl"):
+                    ok = supprimer_ligne(TABLE_CLIENTS,"ID_Client",id_del)
+                    add_notif(f"{id_del} supprime" if ok else "Erreur","success" if ok else "error")
+                    st.rerun()
+    with cf:
+        st.markdown('<p class="gd-sec-title">Ajouter / Modifier</p>', unsafe_allow_html=True)
+        mode = st.radio("Mode",["Ajouter","Modifier"],horizontal=True,key="mode_cl")
+        with st.form("form_cl"):
+            id_cl = st.text_input("ID Client *", placeholder="C001")
+            nom   = st.text_input("Nom client *", placeholder="Pierre Martin")
+            eml   = st.text_input("Email")
+            tel   = st.text_input("Telephone")
+            ach   = st.number_input("Nombre achats", min_value=0, value=0)
+            val   = st.number_input("Valeur totale ($)", min_value=0.0, value=0.0, step=100.0)
+            dvis  = st.date_input("Derniere visite", value=date.today())
+            niv   = st.selectbox("Niveau fidelite",["Bronze","Argent","Or","Platine"])
+            sub   = st.form_submit_button(mode, use_container_width=True)
+        if sub:
+            if not id_cl or not nom: add_notif("ID et Nom obligatoires.","warn")
+            else:
+                d = {"Nom_Client":nom,"Email":eml or None,"Telephone":tel or None,"Nombre_Achats":ach,"Valeur_Totale":val,"Derniere_Visite":str(dvis),"Niveau_Fidelite":niv}
+                if mode=="Ajouter": d["ID_Client"]=id_cl; ok=ajouter_ligne(TABLE_CLIENTS,d)
+                else: ok=modifier_ligne(TABLE_CLIENTS,"ID_Client",id_cl,d)
+                add_notif(f"Client {id_cl} {'ajoute' if mode=='Ajouter' else 'modifie'} !" if ok else "Erreur","success" if ok else "error")
+            st.rerun()
+
+# ── IMPORT EXCEL ──────────────────────────────────────────────────
+with tab_import:
+    st.markdown('<p class="gd-sec-title">Importer Excel vers Azure SQL</p>', unsafe_allow_html=True)
+    st.markdown('<div class="gd-import-info">Importez vos fichiers Excel dans Azure SQL. Les colonnes doivent correspondre a celles de settings.py.</div>', unsafe_allow_html=True)
+    c1,c2 = st.columns(2)
+    with c1:
+        f = st.file_uploader("stocks.xlsx", type=["xlsx"], key="up_s")
+        if f and st.button("Importer Stocks"):
+            import tempfile,os
+            with tempfile.NamedTemporaryFile(delete=False,suffix=".xlsx") as tmp: tmp.write(f.read()); p=tmp.name
+            i,e = importer_depuis_excel(TABLE_STOCKS,p,"ID_Piece"); os.unlink(p)
+            add_notif(f"Stocks : {i} inseres, {e} erreurs","success" if e==0 else "warn"); st.rerun()
+        f = st.file_uploader("commandes.xlsx", type=["xlsx"], key="up_c")
+        if f and st.button("Importer Commandes"):
+            import tempfile,os
+            with tempfile.NamedTemporaryFile(delete=False,suffix=".xlsx") as tmp: tmp.write(f.read()); p=tmp.name
+            i,e = importer_depuis_excel(TABLE_COMMANDES,p,"ID_Commande"); os.unlink(p)
+            add_notif(f"Commandes : {i} inserees, {e} erreurs","success" if e==0 else "warn"); st.rerun()
+    with c2:
+        f = st.file_uploader("clients.xlsx", type=["xlsx"], key="up_cl")
+        if f and st.button("Importer Clients"):
+            import tempfile,os
+            with tempfile.NamedTemporaryFile(delete=False,suffix=".xlsx") as tmp: tmp.write(f.read()); p=tmp.name
+            i,e = importer_depuis_excel(TABLE_CLIENTS,p,"ID_Client"); os.unlink(p)
+            add_notif(f"Clients : {i} inseres, {e} erreurs","success" if e==0 else "warn"); st.rerun()
+        if st.button("Voir les stats SQL"):
+            try:
+                nb_s=len(lire_table(TABLE_STOCKS)); nb_c=len(lire_table(TABLE_COMMANDES)); nb_cl=len(lire_table(TABLE_CLIENTS))
+                st.markdown(f'<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);padding:1rem"><div class="gd-stats-grid"><div><div class="gd-stat-val" style="color:var(--accent)">{nb_s}</div><div class="gd-stat-lbl">Stocks</div></div><div><div class="gd-stat-val" style="color:var(--blue)">{nb_c}</div><div class="gd-stat-lbl">Commandes</div></div><div><div class="gd-stat-val" style="color:var(--amber)">{nb_cl}</div><div class="gd-stat-lbl">Clients</div></div></div></div>', unsafe_allow_html=True)
+            except Exception as e: st.error(f"Erreur : {e}")
+
+================================================================================
+FICHIER 7 : pages/4_Azure_SQL.py
+================================================================================
+
+# ==============================================================================
+# FICHIER : pages/4_Azure_SQL.py
+# ROLE    : Configuration et monitoring Azure SQL Database
+# CSS     : importe depuis frontend/styles/azure_sql_css.py
+# ==============================================================================
+
+import streamlit as st
+
+from backend.utils.sql import (
+    tester_connexion, initialiser_tables, lire_table,
+    TABLE_STOCKS, TABLE_COMMANDES, TABLE_CLIENTS,
+    SQL_SERVER, SQL_DATABASE
+)
+from backend.config.settings       import COMPANY_NAME
+from components.navbar             import get_navbar, inject_base_css
+from frontend.styles.azure_sql_css import SQL_CSS
+
+st.set_page_config(page_title=f"{COMPANY_NAME} — Azure SQL", page_icon="🗄️", layout="wide", initial_sidebar_state="collapsed")
+st.markdown(inject_base_css(), unsafe_allow_html=True)
+st.markdown(SQL_CSS,           unsafe_allow_html=True)
+st.markdown(get_navbar("Azure SQL"), unsafe_allow_html=True)
+
+if "sql_notifs" not in st.session_state: st.session_state.sql_notifs = []
+
+def add_notif(msg, kind="success"):
+    st.session_state.sql_notifs.append({"msg": msg, "kind": kind})
+    if len(st.session_state.sql_notifs) > 3: st.session_state.sql_notifs.pop(0)
+
+connexion_ok = tester_connexion()
+badge = '<span class="sql-badge green">Connecte</span>' if connexion_ok else '<span class="sql-badge red">Deconnecte</span>'
+
+st.markdown(f"""
+<div class="sql-hero">
+  <div class="sql-eyebrow">Azure SQL Database</div>
+  <h1>Configuration <em>Azure SQL</em></h1>
+  <p class="sql-hero-desc">Gerez votre connexion a Azure SQL et surveillez vos tables. {badge}</p>
+</div>
+""", unsafe_allow_html=True)
+
+for n in st.session_state.sql_notifs:
+    st.markdown(f'<div class="sql-notif {n["kind"]}">{n["msg"]}</div>', unsafe_allow_html=True)
+
+c1, c2 = st.columns([3,2], gap="medium")
+
+with c1:
+    st.markdown('<p class="sql-sec-title">Informations de connexion</p>', unsafe_allow_html=True)
+    st.markdown(f"""
+    <div class="sql-conn-card">
+      <div class="sql-info-row"><span class="sql-info-label">Serveur</span><span class="sql-info-val">{SQL_SERVER}</span></div>
+      <div class="sql-info-row"><span class="sql-info-label">Base de donnees</span><span class="sql-info-val">{SQL_DATABASE}</span></div>
+      <div class="sql-info-row"><span class="sql-info-label">Authentification</span><span class="sql-info-val">ManagedIdentityCredential</span></div>
+      <div class="sql-info-row"><span class="sql-info-label">Driver</span><span class="sql-info-val">ODBC Driver 18 for SQL Server</span></div>
+      <div class="sql-info-row"><span class="sql-info-label">Chiffrement</span><span class="sql-info-val">TLS 1.2 — Encrypt=yes</span></div>
+    </div>
+    """, unsafe_allow_html=True)
+    st.markdown('<p class="sql-sec-title" style="margin-top:1rem">Variables .env requises</p>', unsafe_allow_html=True)
+    st.markdown(f'<div class="sql-query-box">SQL_SERVER={SQL_SERVER}<br>SQL_DATABASE={SQL_DATABASE}<br>SQL_DRIVER=ODBC Driver 18 for SQL Server</div>', unsafe_allow_html=True)
+
+    if connexion_ok:
+        st.markdown('<p class="sql-sec-title" style="margin-top:1rem">Statistiques tables</p>', unsafe_allow_html=True)
+        cs1,cs2,cs3 = st.columns(3)
+        for table,label,color,col in [(TABLE_STOCKS,"Stocks","var(--accent)",cs1),(TABLE_COMMANDES,"Commandes","var(--blue)",cs2),(TABLE_CLIENTS,"Clients","var(--amber)",cs3)]:
+            with col:
+                try:
+                    nb = len(lire_table(table))
+                    st.markdown(f'<div class="sql-table-stat"><div class="sql-table-stat-val" style="color:{color}">{nb}</div><div class="sql-table-stat-lbl">{label}</div></div>', unsafe_allow_html=True)
+                except:
+                    st.markdown(f'<div class="sql-table-stat"><div class="sql-table-stat-val" style="color:var(--red)">?</div><div class="sql-table-stat-lbl">{label}</div></div>', unsafe_allow_html=True)
+
+with c2:
+    st.markdown('<p class="sql-sec-title">Actions</p>', unsafe_allow_html=True)
+    if st.button("Tester la connexion", use_container_width=True):
+        ok = tester_connexion()
+        add_notif("Connexion reussie !" if ok else "Connexion echouee", "success" if ok else "error")
+        st.rerun()
+    if st.button("Initialiser les tables", use_container_width=True):
+        if not connexion_ok: add_notif("Connexion requise.","error")
+        else:
+            with st.spinner("Creation..."):
+                try: initialiser_tables(); add_notif("Tables creees !","success")
+                except Exception as e: add_notif(f"Erreur : {e}","error")
+        st.rerun()
+
+    st.markdown('<p class="sql-sec-title" style="margin-top:1rem">Requete SQL</p>', unsafe_allow_html=True)
+    st.markdown('<div class="sql-warning">Utilisez avec precaution.</div>', unsafe_allow_html=True)
+    with st.form("sql_q"):
+        req = st.text_area("Requete", value="SELECT TOP 10 * FROM stocks", height=100)
+        run = st.form_submit_button("Executer", use_container_width=True)
+    if run and req.strip():
+        if not connexion_ok: add_notif("Connexion requise.","error")
+        else:
+            try:
+                from backend.utils.sql import get_connection
+                import pandas as pd
+                conn=get_connection(); df=pd.read_sql(req,conn); conn.close()
+                st.dataframe(df,use_container_width=True)
+            except Exception as e: add_notif(f"Erreur SQL : {e}","error"); st.rerun()
+
+    st.markdown('<p class="sql-sec-title" style="margin-top:1rem">Installation ODBC</p>', unsafe_allow_html=True)
+    st.markdown('<div class="sql-query-box" style="font-size:11px">pip install pyodbc<br><br># Ubuntu / App Service :<br>ACCEPT_EULA=Y apt-get install -y msodbcsql18</div>', unsafe_allow_html=True)
+
+================================================================================
+AJOUTER LA NAVBAR AUX PAGES EXISTANTES
+================================================================================
+
+Dans 1_Dashboard.py — ajoutez apres les imports :
+    from components.navbar import get_navbar, inject_base_css
+
+Puis apres st.set_page_config(...) :
+    st.markdown(inject_base_css(), unsafe_allow_html=True)
+    nb_alertes = len(st.session_state.get("alertes_stocks", []))
+    st.markdown(get_navbar("Dashboard", nb_alertes), unsafe_allow_html=True)
+
+Dans 2_Evaluation_et_Index.py — ajoutez apres les imports :
+    from components.navbar import get_navbar, inject_base_css
+
+Puis apres st.set_page_config(...) :
+    st.markdown(inject_base_css(), unsafe_allow_html=True)
+    st.markdown(get_navbar("Evaluation"), unsafe_allow_html=True)
+
+================================================================================
+FIN DU FICHIER
+================================================================================
