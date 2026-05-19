@@ -1998,12 +1998,6 @@ FICHIER 3 : pages/2_Evaluation_et_Index.py
  
 # ==============================================================================
 # FICHIER : pages/2_Evaluation_et_Index.py
-# ROLE    : Gestion des index Azure AI Search + evaluation RAGAS + LLM Judge
-# STYLE   : Inspire du template SwiftBox
-# ==============================================================================
- 
-# ==============================================================================
-# FICHIER : pages/2_Evaluation_et_Index.py
 # ROLE    : Page de gestion des index Azure AI Search + evaluation RAGAS/LLM Judge
 # STYLE   : Inspire du template SwiftBox
 # ==============================================================================
@@ -2388,25 +2382,65 @@ with tab_ragas:
             else:
                 with st.spinner("Calcul des métriques RAGAS..."):
                     try:
-                        from ragas import evaluate
+                        import os
+                        from ragas import evaluate, RunConfig
                         from ragas.metrics import faithfulness, answer_relevancy, context_precision, context_recall
+                        from ragas.llms import LangchainLLMWrapper
+                        from ragas.embeddings import LangchainEmbeddingsWrapper
+                        from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
+                        from azure.identity import ManagedIdentityCredential, get_bearer_token_provider
                         from datasets import Dataset
 
+                        # ── Configurer RAGAS avec Azure OpenAI + ManagedIdentity ──
+                        cred           = get_credential()
+                        token_provider = get_bearer_token_provider(
+                            cred,
+                            "https://cognitiveservices.azure.com/.default"
+                        )
+
+                        ragas_llm = AzureChatOpenAI(
+                            azure_endpoint   = os.getenv("AZURE_OPENAI_ENDPOINT"),
+                            azure_deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4-5"),
+                            api_version      = os.getenv("AZURE_API_VERSION", "2024-12-01-preview"),
+                            azure_ad_token_provider = token_provider,
+                        )
+
+                        ragas_embeddings = AzureOpenAIEmbeddings(
+                            azure_endpoint   = os.getenv("AZURE_OPENAI_ENDPOINT"),
+                            azure_deployment = os.getenv("EMBEDDING_MODEL", "text-embedding-ada-002"),
+                            api_version      = os.getenv("AZURE_API_VERSION", "2024-12-01-preview"),
+                            azure_ad_token_provider = token_provider,
+                        )
+
+                        # ── Assigner le LLM et embeddings a chaque metrique ──
+                        metriques = [faithfulness, answer_relevancy, context_precision, context_recall]
+                        for m in metriques:
+                            m.llm        = LangchainLLMWrapper(ragas_llm)
+                            m.embeddings = LangchainEmbeddingsWrapper(ragas_embeddings)
+
+                        # ── Obtenir les reponses des agents ──
                         answers, contexts = [], []
                         for q in questions:
                             r = orchestrer(q, agent_eval)
                             answers.append(r["reponse"])
                             contexts.append([r["reponse"]])
 
+                        # ── Lancer l'evaluation ──
                         results = evaluate(
-                            Dataset.from_dict({"question":questions,"answer":answers,"contexts":contexts,"ground_truth":ground_truths[:len(questions)]}),
-                            metrics=[faithfulness,answer_relevancy,context_precision,context_recall]
+                            Dataset.from_dict({
+                                "question"    : questions,
+                                "answer"      : answers,
+                                "contexts"    : contexts,
+                                "ground_truth": ground_truths[:len(questions)]
+                            }),
+                            metrics    = metriques,
+                            run_config = RunConfig(max_retries=3, timeout=120)
                         )
                         st.session_state.ragas_results = results
                         add_notif("✅ Évaluation RAGAS terminée !", "success")
 
-                    except ImportError:
-                        add_notif("RAGAS non installé : pip install ragas datasets", "error")
+                    except ImportError as e:
+                        add_notif(f"Librairie manquante : pip install ragas langchain-openai datasets — {str(e)}", "error")
                     except Exception as e:
                         add_notif(f"Erreur RAGAS : {str(e)}", "error")
                 st.rerun()
@@ -2567,7 +2601,11 @@ REPONSE DE L'AGENT: {r['reponse'][:800]}
                   <div style="font-size:11px;color:var(--text2);margin-top:6px;line-height:1.5">{comment}</div>
                 </div>
                 """, unsafe_allow_html=True)
- 
+
+                    
+
+   
+       
 ================================================================================
 FIN DU FICHIER
 ================================================================================
