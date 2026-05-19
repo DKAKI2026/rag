@@ -2002,6 +2002,12 @@ FICHIER 3 : pages/2_Evaluation_et_Index.py
 # STYLE   : Inspire du template SwiftBox
 # ==============================================================================
 
+# ==============================================================================
+# FICHIER : pages/2_Evaluation_et_Index.py
+# ROLE    : Page de gestion des index Azure AI Search + evaluation RAGAS/LLM Judge
+# STYLE   : Inspire du template SwiftBox
+# ==============================================================================
+
 import streamlit as st
 import json, asyncio
 import concurrent.futures
@@ -2451,11 +2457,24 @@ with tab_ragas:
         st.markdown("---")
         st.markdown('<p class="ev-sec-title">Résultats RAGAS</p>', unsafe_allow_html=True)
 
+        # Compatibilite nouvelle version RAGAS — EvaluationResult
+        def get_score(results, key):
+            try:
+                val = results[key]
+                if hasattr(val, '__float__'):
+                    return float(val)
+                import pandas as pd
+                if isinstance(val, pd.Series):
+                    return float(val.mean())
+                return float(val)
+            except:
+                return 0.0
+
         scores = [
-            ("Faithfulness",      results.get("faithfulness",0),      "green",  "🎯"),
-            ("Answer Relevancy",  results.get("answer_relevancy",0),  "blue",   "💡"),
-            ("Context Precision", results.get("context_precision",0), "amber",  "🔍"),
-            ("Context Recall",    results.get("context_recall",0),    "purple", "📚"),
+            ("Faithfulness",      get_score(results, "faithfulness"),      "green",  "🎯"),
+            ("Answer Relevancy",  get_score(results, "answer_relevancy"),  "blue",   "💡"),
+            ("Context Precision", get_score(results, "context_precision"), "amber",  "🔍"),
+            ("Context Recall",    get_score(results, "context_recall"),    "purple", "📚"),
         ]
 
         cols = st.columns(4)
