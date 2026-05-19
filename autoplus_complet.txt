@@ -1226,7 +1226,7 @@ with tab_eval:
                         r      = orchestrer(question, agent_eval)
                         prompt = f'Evalue cette reponse RAG. JSON uniquement: {{"fidelite":{{"score":0,"commentaire":""}},"pertinence":{{"score":0,"commentaire":""}},"completude":{{"score":0,"commentaire":""}},"verdict":"BON/MOYEN/MAUVAIS","suggestion":""}}\nQUESTION: {question}\nREPONSE: {r["reponse"]}'
                         async def eval_llm():
-                            a = client.as_agent(name="Judge", instructions="Tu evalues des reponses RAG. Reponds UNIQUEMENT en JSON valide.")
+                            a = client.as_agent(name="Judge",instructions="Tu evalues des reponses RAG. Reponds UNIQUEMENT en JSON valide.")
                             return await a.run(prompt)
                         try:
                             resp    = asyncio.get_event_loop().run_until_complete(eval_llm())
@@ -2002,36 +2002,45 @@ FICHIER 3 : pages/2_Evaluation_et_Index.py
 # STYLE   : Inspire du template SwiftBox
 # ==============================================================================
  
+# ==============================================================================
+# FICHIER : pages/2_Evaluation_et_Index.py
+# ROLE    : Page de gestion des index Azure AI Search + evaluation RAGAS/LLM Judge
+# STYLE   : Inspire du template SwiftBox
+# ==============================================================================
+
 import streamlit as st
 import json, asyncio
-import nest_asyncio
-nest_asyncio.apply()
- 
-from backend.indexer         import index_existe, creer_index, indexer_pdfs
+import concurrent.futures
+
+from backend.indexer         import index_existe, creer_index, indexer_pdfs, tester_ragas
 from backend.orchestrateur   import orchestrer
 from backend.config.settings import (
     get_credential, get_embedding_client, get_agent_client,
+    AZURE_OPENAI_DEPLOYMENT,
     INDEX_POLITIQUES, INDEX_STOCKS, INDEX_COMMANDES, INDEX_CLIENTS,
     DOSSIER_POLITIQUES, DOSSIER_STOCKS, DOSSIER_COMMANDES, DOSSIER_CLIENTS,
     COMPANY_NAME
 )
- 
+
 st.set_page_config(
-    page_title=f"{COMPANY_NAME} — Evaluation & Index",
+    page_title=f"{COMPANY_NAME} — Évaluation & Index",
     page_icon="🔬",
     layout="wide",
     initial_sidebar_state="expanded"
 )
- 
+
+# ==============================================================================
+# ▶ CSS (meme theme SwiftBox)
+# ==============================================================================
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=Fraunces:ital,wght@0,600;0,800;1,600&display=swap');
- 
+
 :root {
   --bg:#f2f7f4; --surface:#ffffff; --surface2:#eaf3ed; --surface3:#d6ebe0;
   --border:#cce0d3; --border2:#aecfbb;
   --text:#0f1f16; --text2:#3d6350; --text3:#7aaa8e;
-  --accent:#166534; --accent-mid:#16a34a;
+  --accent:#166534; --accent-mid:#16a34a; --accent-light:#22c55e;
   --accent-bg:#dcfce7; --accent-border:#86efac;
   --amber:#d97706; --amber-bg:#fef3c7; --amber-bd:#fcd34d;
   --blue:#1d4ed8; --blue-bg:#dbeafe; --blue-bd:#93c5fd;
@@ -2055,35 +2064,41 @@ section[data-testid="stSidebar"] { background:var(--surface) !important; border-
 ::-webkit-scrollbar-track { background:var(--surface2); }
 ::-webkit-scrollbar-thumb { background:var(--border2); border-radius:99px; }
 hr { border-color:var(--border) !important; }
- 
+
 .ev-hero { background:var(--surface); border:1px solid var(--border); border-radius:var(--r-xl); padding:1.8rem 2rem; margin-bottom:1rem; box-shadow:var(--shadow-sm); }
 .ev-eyebrow { display:inline-flex; align-items:center; gap:7px; font-size:11.5px; font-weight:600; color:var(--accent); background:var(--accent-bg); border:1px solid var(--accent-border); border-radius:99px; padding:4px 13px; margin-bottom:0.75rem; }
 .ev-hero h1 { font-family:var(--font-d); font-weight:800; font-size:1.75rem; line-height:1.2; letter-spacing:-0.6px; color:var(--text); margin-bottom:0.5rem; }
 .ev-hero h1 em { font-style:italic; color:var(--accent); }
 .ev-hero-desc { font-size:13.5px; color:var(--text2); line-height:1.7; }
- 
+
+.ev-card { background:var(--surface); border:1px solid var(--border); border-radius:var(--r-lg); margin-bottom:1rem; box-shadow:var(--shadow-sm); overflow:hidden; }
+.ev-card-head { padding:0.9rem 1.1rem; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; }
+.ev-card-title { font-size:13.5px; font-weight:600; color:var(--text); }
+.ev-card-body  { padding:1.1rem; }
+
 .ev-sec-title { font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text3); margin-bottom:8px; }
- 
+
 .ev-badge { display:inline-flex; align-items:center; gap:4px; font-size:10.5px; font-weight:600; padding:3px 10px; border-radius:99px; }
 .ev-badge.green  { background:var(--accent-bg); color:var(--accent); }
 .ev-badge.red    { background:var(--red-bg);    color:var(--red); }
 .ev-badge.blue   { background:var(--blue-bg);   color:var(--blue); }
 .ev-badge.amber  { background:var(--amber-bg);  color:var(--amber); }
 .ev-badge.purple { background:var(--purple-bg); color:var(--purple); }
- 
+
 .ev-index-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
 .ev-index-card { background:var(--bg); border:1px solid var(--border); border-radius:var(--r-md); padding:1rem; transition:box-shadow 0.2s,border-color 0.2s; }
 .ev-index-card:hover { box-shadow:var(--shadow-sm); border-color:var(--accent-border); }
 .ev-index-top { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
 .ev-index-name { font-size:13px; font-weight:600; color:var(--text); }
 .ev-index-desc { font-size:11.5px; color:var(--text2); margin-bottom:8px; }
- 
+.ev-index-meta { font-size:10.5px; color:var(--text3); }
+
 .ev-score-card { background:var(--bg); border:1px solid var(--border); border-radius:var(--r-md); padding:1rem; text-align:center; }
 .ev-score-val  { font-family:var(--font-d); font-size:2rem; font-weight:800; color:var(--accent); letter-spacing:-1px; }
 .ev-score-lbl  { font-size:10.5px; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; color:var(--text3); margin-top:2px; }
 .ev-score-bar  { height:6px; background:var(--surface3); border-radius:99px; margin-top:8px; overflow:hidden; }
-.ev-score-fill { height:100%; border-radius:99px; }
- 
+.ev-score-fill { height:100%; background:var(--accent-mid); border-radius:99px; transition:width 0.6s ease; }
+
 .ev-verdict { border-radius:var(--r-lg); padding:1.2rem; margin:0.75rem 0; }
 .ev-verdict.bon    { background:var(--accent-bg); border:1px solid var(--accent-border); }
 .ev-verdict.moyen  { background:var(--amber-bg);  border:1px solid var(--amber-bd); }
@@ -2093,22 +2108,22 @@ hr { border-color:var(--border) !important; }
 .ev-verdict.moyen  .ev-verdict-title { color:var(--amber); }
 .ev-verdict.mauvais .ev-verdict-title { color:var(--red); }
 .ev-verdict-body { font-size:12.5px; color:var(--text2); line-height:1.6; }
- 
-.ev-notif { border-radius:var(--r-md); padding:0.65rem 1rem; margin-bottom:0.5rem; font-size:12.5px; border-left:3px solid; }
+
+.ev-notif { border-radius:var(--r-md); padding:0.65rem 1rem; margin-bottom:0.5rem; font-size:12.5px; border-left:3px solid; display:flex; align-items:center; gap:8px; }
 .ev-notif.info    { background:var(--blue-bg);   border-color:var(--blue);       color:var(--blue); }
 .ev-notif.success { background:var(--accent-bg); border-color:var(--accent-mid); color:var(--accent); }
 .ev-notif.warn    { background:var(--amber-bg);  border-color:var(--amber);      color:var(--amber); }
 .ev-notif.error   { background:var(--red-bg);    border-color:var(--red);        color:var(--red); }
- 
-.ev-q-block { background:var(--surface2); border:1px solid var(--border); border-radius:var(--r-md); padding:0.9rem 1rem; margin-bottom:0.75rem; }
+
+.ev-question-block { background:var(--surface2); border:1px solid var(--border); border-radius:var(--r-md); padding:0.9rem 1rem; margin-bottom:0.75rem; }
 .ev-q-label { font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; color:var(--text3); margin-bottom:4px; }
 .ev-q-text  { font-size:13px; color:var(--text); font-weight:500; }
-.ev-q-rep   { font-size:12px; color:var(--text2); margin-top:6px; border-top:1px solid var(--border); padding-top:6px; }
+.ev-q-reponse { font-size:12px; color:var(--text2); margin-top:6px; border-top:1px solid var(--border); padding-top:6px; }
 </style>
 """, unsafe_allow_html=True)
- 
+
 # ==============================================================================
-# CONNEXION AZURE
+# ▶ CONNEXION AZURE
 # ==============================================================================
 @st.cache_resource
 def load_azure():
@@ -2117,9 +2132,9 @@ def load_azure():
     except Exception as e:
         st.error(f"Erreur connexion Azure : {e}")
         st.stop()
- 
+
 credential, embedding_client = load_azure()
- 
+
 @st.cache_data(ttl=60)
 def verifier_index(_cred):
     return {
@@ -2128,94 +2143,103 @@ def verifier_index(_cred):
         "commandes" : index_existe(_cred, INDEX_COMMANDES),
         "clients"   : index_existe(_cred, INDEX_CLIENTS),
     }
- 
+
+# Notifications locales
 if "ev_notifs" not in st.session_state:
     st.session_state.ev_notifs = []
- 
+
 def add_notif(msg, kind="info"):
     st.session_state.ev_notifs.append({"msg": msg, "kind": kind})
     if len(st.session_state.ev_notifs) > 4:
         st.session_state.ev_notifs.pop(0)
- 
+
 # ==============================================================================
-# SIDEBAR
+# ▶ SIDEBAR
 # ==============================================================================
 with st.sidebar:
-    st.markdown("""
+    st.markdown(f"""
     <div style="display:flex;align-items:center;gap:10px;padding:0.5rem 0 1rem">
-      <div style="width:34px;height:34px;background:var(--accent);border-radius:var(--r-md);display:flex;align-items:center;justify-content:center;color:#fff;font-size:16px">🔬</div>
-      <span style="font-family:var(--font-d);font-weight:800;font-size:18px;color:var(--text)">Eval & <em style="font-style:italic;color:var(--accent)">Index</em></span>
+      <div style="width:34px;height:34px;background:var(--accent);border-radius:var(--r-md);display:flex;align-items:center;justify-content:center;color:#fff;font-size:16px;box-shadow:0 2px 8px rgba(22,101,52,0.35)">🔬</div>
+      <span style="font-family:var(--font-d);font-weight:800;font-size:18px;color:var(--text)">Éval & <em style="font-style:italic;color:var(--accent)">Index</em></span>
     </div>
     """, unsafe_allow_html=True)
- 
+
     st.markdown("---")
-    st.markdown('<p class="ev-sec-title">Navigation</p>', unsafe_allow_html=True)
+    st.markdown('<p style="font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--text3)">Navigation</p>', unsafe_allow_html=True)
     st.markdown("""
     <div style="font-size:12.5px;color:var(--text2);line-height:2">
-      <a href="/Dashboard" style="color:var(--text2);text-decoration:none">🏠 Dashboard</a><br>
-      <strong style="color:var(--accent)">🔬 Evaluation & Index</strong>
+      <a href="/Dashboard" style="color:var(--text2);text-decoration:none">🏠 Dashboard principal</a><br>
+      <strong style="color:var(--accent)">🔬 Évaluation & Index</strong>
     </div>
     """, unsafe_allow_html=True)
- 
+
     st.markdown("---")
-    st.markdown('<p class="ev-sec-title">Statut des index</p>', unsafe_allow_html=True)
+    st.markdown('<p style="font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--text3)">Statut des index</p>', unsafe_allow_html=True)
+
     index_status = verifier_index(credential)
-    for icone, nom, key in [("📋","Politiques","politiques"),("📦","Stocks","stocks"),("🚗","Commandes","commandes"),("⭐","Fidelisation","clients")]:
-        actif = index_status.get(key, False)
-        badge = '<span class="ev-badge green">Actif</span>' if actif else '<span class="ev-badge red">Absent</span>'
+    infos = [
+        ("📋", "Politiques", "politiques", "green"),
+        ("📦", "Stocks",     "stocks",     "amber"),
+        ("🚗", "Commandes",  "commandes",  "blue"),
+        ("⭐", "Fidélisation","clients",   "purple"),
+    ]
+    for icone, nom, key, color in infos:
+        actif  = index_status.get(key, False)
+        badge  = f'<span class="ev-badge green">✅ Actif</span>' if actif else '<span class="ev-badge red">❌ Absent</span>'
         st.markdown(f'<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 0;font-size:12.5px;color:var(--text2)">{icone} {nom} {badge}</div>', unsafe_allow_html=True)
- 
+
     st.markdown("---")
-    if st.button("Rafraichir les statuts"):
+    if st.button("🔄 Rafraîchir les statuts"):
         st.cache_data.clear()
         st.rerun()
- 
+
 # ==============================================================================
-# HERO
+# ▶ HERO
 # ==============================================================================
-index_status    = verifier_index(credential)
+index_status  = verifier_index(credential)
 nb_index_actifs = sum(index_status.values())
- 
+
 st.markdown(f"""
 <div class="ev-hero">
-  <div class="ev-eyebrow">Gestion des index & evaluation RAG</div>
-  <h1>Index & <em>Evaluation</em></h1>
+  <div class="ev-eyebrow">🔬 Gestion des index & évaluation RAG</div>
+  <h1>Index & <em>Évaluation</em></h1>
   <p class="ev-hero-desc">
-    Gerez vos index Azure AI Search et evaluez la qualite de vos agents IA
-    avec <strong>RAGAS</strong> et <strong>LLM as a Judge</strong>.<br>
-    {nb_index_actifs}/4 index actifs · Microsoft Agent Framework
+    Gérez vos index Azure AI Search et évaluez la qualité de vos agents IA
+    avec <strong>RAGAS</strong> et <strong>LLM as a Judge</strong>.
+    <br>{nb_index_actifs}/4 index actifs · Microsoft Agent Framework
   </p>
 </div>
 """, unsafe_allow_html=True)
- 
+
+# Notifications
 for notif in st.session_state.ev_notifs:
     icons = {"info":"ℹ️","success":"✅","warn":"⚠️","error":"❌"}
     st.markdown(f'<div class="ev-notif {notif["kind"]}">{icons.get(notif["kind"],"ℹ️")} {notif["msg"]}</div>', unsafe_allow_html=True)
- 
+
 # ==============================================================================
-# ONGLETS
+# ▶ ONGLETS
 # ==============================================================================
 tab_index, tab_ragas, tab_judge = st.tabs([
     "🗂️ Gestion des Index",
-    "📊 Evaluation RAGAS",
+    "📊 Évaluation RAGAS",
     "🧑‍⚖️ LLM as a Judge"
 ])
- 
+
 # ── ONGLET INDEX ──────────────────────────────────────────────────
 with tab_index:
-    st.markdown('<p class="ev-sec-title">Etat des index Azure AI Search</p>', unsafe_allow_html=True)
- 
+    st.markdown('<p class="ev-sec-title">État des index Azure AI Search</p>', unsafe_allow_html=True)
+
     config_agents = {
         "politiques": (INDEX_POLITIQUES, DOSSIER_POLITIQUES, "📋", "green",  "Politiques de ventes, leasing, financement, garanties"),
-        "stocks"    : (INDEX_STOCKS,     DOSSIER_STOCKS,     "📦", "amber",  "Stocks de voitures et pieces detachees"),
+        "stocks"    : (INDEX_STOCKS,     DOSSIER_STOCKS,     "📦", "amber",  "Stocks de voitures et pièces détachées"),
         "commandes" : (INDEX_COMMANDES,  DOSSIER_COMMANDES,  "🚗", "blue",   "Suivi des commandes et livraisons"),
-        "clients"   : (INDEX_CLIENTS,    DOSSIER_CLIENTS,    "⭐", "purple", "Fidelisation et historique clients"),
+        "clients"   : (INDEX_CLIENTS,    DOSSIER_CLIENTS,    "⭐", "purple", "Fidélisation et historique clients"),
     }
- 
+
     st.markdown('<div class="ev-index-grid">', unsafe_allow_html=True)
     for agent, (idx_name, dossier, icone, color, desc) in config_agents.items():
         actif = index_status.get(agent, False)
-        badge = f'<span class="ev-badge green">Actif</span>' if actif else '<span class="ev-badge red">Absent</span>'
+        badge = f'<span class="ev-badge green">✅ Actif</span>' if actif else '<span class="ev-badge red">❌ Absent</span>'
         st.markdown(f"""
         <div class="ev-index-card">
           <div class="ev-index-top">
@@ -2226,234 +2250,320 @@ with tab_index:
             {badge}
           </div>
           <div class="ev-index-desc">{desc}</div>
-          <div style="font-size:10.5px;color:var(--text3)">Index : <code style="background:var(--surface3);padding:1px 6px;border-radius:4px;font-size:10px">{idx_name}</code></div>
+          <div class="ev-index-meta">Index : <code style="background:var(--surface3);padding:1px 6px;border-radius:4px;font-size:10px">{idx_name}</code></div>
         </div>
         """, unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
- 
+
     st.markdown("---")
     st.markdown('<p class="ev-sec-title">Indexer ou re-indexer un agent</p>', unsafe_allow_html=True)
- 
-    col1, col2 = st.columns([2,1])
+
+    col1, col2 = st.columns([2, 1])
     with col1:
-        agent_a_indexer = st.selectbox("Choisir l'agent", list(config_agents.keys()),
+        agent_a_indexer = st.selectbox("Choisir l'agent à indexer", list(config_agents.keys()),
             format_func=lambda x: f"{config_agents[x][2]} {x.capitalize()}")
         idx_name, dossier, _, _, _ = config_agents[agent_a_indexer]
         deja = index_status.get(agent_a_indexer, False)
+
         if deja:
-            st.markdown(f'<div class="ev-notif success">L\'index <strong>{idx_name}</strong> existe deja.</div>', unsafe_allow_html=True)
-            forcer = st.checkbox("Forcer la re-indexation")
+            st.markdown(f'<div class="ev-notif success">✅ L\'index <strong>{idx_name}</strong> existe déjà dans Azure AI Search.</div>', unsafe_allow_html=True)
+            forcer = st.checkbox("⚠️ Forcer la re-indexation (supprime l'index existant)")
         else:
-            st.markdown(f'<div class="ev-notif warn">L\'index <strong>{idx_name}</strong> n\'existe pas encore.</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="ev-notif warn">⚠️ L\'index <strong>{idx_name}</strong> n\'existe pas encore. Cliquez Indexer pour le créer.</div>', unsafe_allow_html=True)
             forcer = False
+
     with col2:
         st.markdown("<br>", unsafe_allow_html=True)
-        if st.button(f"Indexer {agent_a_indexer}", use_container_width=True):
+        if st.button(f"⚡ Indexer {agent_a_indexer}", use_container_width=True):
             if deja and not forcer:
-                add_notif("Cochez 'Forcer la re-indexation'.", "warn")
+                add_notif("Index déjà existant — cochez 'Forcer la re-indexation'.", "warn")
             else:
-                with st.spinner(f"Indexation de '{agent_a_indexer}'..."):
+                with st.spinner(f"Indexation de '{agent_a_indexer}' en cours..."):
                     try:
                         creer_index(credential, idx_name)
                         chunks, fichiers = indexer_pdfs(credential, embedding_client, dossier, idx_name, agent_a_indexer)
-                        add_notif(f"{fichiers} PDF · {chunks} chunks indexes", "success")
+                        add_notif(f"✅ {fichiers} PDF · {chunks} chunks indexés pour '{agent_a_indexer}'", "success")
                         st.cache_data.clear()
                     except Exception as e:
-                        add_notif(f"Erreur : {str(e)}", "error")
+                        add_notif(f"Erreur indexation : {str(e)}", "error")
             st.rerun()
-        if st.button("Rafraichir", use_container_width=True):
+
+        if st.button("🔄 Rafraîchir", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
- 
+
+    # Info colonnes Excel
     st.markdown("---")
     st.markdown('<p class="ev-sec-title">Colonnes Excel requises</p>', unsafe_allow_html=True)
+
     col_a, col_b, col_c = st.columns(3)
     with col_a:
-        st.markdown('<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r-md);padding:0.9rem"><div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:6px">📦 stocks.xlsx</div><div style="font-size:11px;color:var(--text2);line-height:1.8;font-family:monospace">ID_Piece<br>Nom_Piece<br>Quantite<br>Seuil_Minimum<br>Date_Livraison_Prevue<br>Fournisseur<br>Modele_Voiture</div></div>', unsafe_allow_html=True)
+        st.markdown("""
+        <div class="ev-card-body" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r-md);padding:0.9rem">
+          <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:6px">📦 stocks.xlsx</div>
+          <div style="font-size:11px;color:var(--text2);line-height:1.8;font-family:monospace">
+            ID_Piece<br>Nom_Piece<br>Quantite<br>Seuil_Minimum<br>Date_Livraison_Prevue<br>Fournisseur<br>Modele_Voiture
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
     with col_b:
-        st.markdown('<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r-md);padding:0.9rem"><div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:6px">🚗 commandes.xlsx</div><div style="font-size:11px;color:var(--text2);line-height:1.8;font-family:monospace">ID_Commande<br>Nom_Client<br>Modele_Voiture<br>Date_Commande<br>Statut<br>Montant_Total<br>Vendeur</div></div>', unsafe_allow_html=True)
+        st.markdown("""
+        <div class="ev-card-body" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r-md);padding:0.9rem">
+          <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:6px">🚗 commandes.xlsx</div>
+          <div style="font-size:11px;color:var(--text2);line-height:1.8;font-family:monospace">
+            ID_Commande<br>Nom_Client<br>Modele_Voiture<br>Date_Commande<br>Statut<br>Montant_Total<br>Vendeur
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
     with col_c:
-        st.markdown('<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r-md);padding:0.9rem"><div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:6px">⭐ clients.xlsx</div><div style="font-size:11px;color:var(--text2);line-height:1.8;font-family:monospace">ID_Client<br>Nom_Client<br>Email<br>Telephone<br>Nombre_Achats<br>Valeur_Totale<br>Derniere_Visite<br>Niveau_Fidelite</div></div>', unsafe_allow_html=True)
- 
+        st.markdown("""
+        <div class="ev-card-body" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r-md);padding:0.9rem">
+          <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:6px">⭐ clients.xlsx</div>
+          <div style="font-size:11px;color:var(--text2);line-height:1.8;font-family:monospace">
+            ID_Client<br>Nom_Client<br>Email<br>Telephone<br>Nombre_Achats<br>Valeur_Totale<br>Derniere_Visite<br>Niveau_Fidelite
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
 # ── ONGLET RAGAS ──────────────────────────────────────────────────
 with tab_ragas:
-    st.markdown('<p class="ev-sec-title">Evaluation RAGAS — Metriques automatiques</p>', unsafe_allow_html=True)
- 
+    st.markdown('<p class="ev-sec-title">Évaluation RAGAS — Métriques automatiques</p>', unsafe_allow_html=True)
+
     st.markdown("""
-    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:1rem">
-      <div style="background:var(--accent-bg);border:1px solid var(--accent-border);border-radius:var(--r-md);padding:0.8rem;text-align:center">
-        <div style="font-size:18px;margin-bottom:4px">🎯</div>
-        <div style="font-size:12px;font-weight:600;color:var(--accent)">Faithfulness</div>
-        <div style="font-size:11px;color:var(--text2);margin-top:3px">La reponse est-elle fidele aux documents ?</div>
+    <div class="ev-card">
+      <div class="ev-card-head">
+        <span class="ev-card-title">📊 Métriques RAGAS</span>
+        <span class="ev-badge blue">4 métriques</span>
       </div>
-      <div style="background:var(--blue-bg);border:1px solid var(--blue-bd);border-radius:var(--r-md);padding:0.8rem;text-align:center">
-        <div style="font-size:18px;margin-bottom:4px">💡</div>
-        <div style="font-size:12px;font-weight:600;color:var(--blue)">Answer Relevancy</div>
-        <div style="font-size:11px;color:var(--text2);margin-top:3px">La reponse repond-elle a la question ?</div>
-      </div>
-      <div style="background:var(--amber-bg);border:1px solid var(--amber-bd);border-radius:var(--r-md);padding:0.8rem;text-align:center">
-        <div style="font-size:18px;margin-bottom:4px">🔍</div>
-        <div style="font-size:12px;font-weight:600;color:var(--amber)">Context Precision</div>
-        <div style="font-size:11px;color:var(--text2);margin-top:3px">Les bons chunks ont-ils ete recuperes ?</div>
-      </div>
-      <div style="background:var(--purple-bg);border:1px solid var(--purple-bd);border-radius:var(--r-md);padding:0.8rem;text-align:center">
-        <div style="font-size:18px;margin-bottom:4px">📚</div>
-        <div style="font-size:12px;font-weight:600;color:var(--purple)">Context Recall</div>
-        <div style="font-size:11px;color:var(--text2);margin-top:3px">Tous les passages ont-ils ete trouves ?</div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;padding:1rem">
+        <div style="background:var(--accent-bg);border:1px solid var(--accent-border);border-radius:var(--r-md);padding:0.8rem;text-align:center">
+          <div style="font-size:18px;margin-bottom:4px">🎯</div>
+          <div style="font-size:12px;font-weight:600;color:var(--accent)">Faithfulness</div>
+          <div style="font-size:11px;color:var(--text2);margin-top:3px">La réponse est-elle fidèle aux documents ?</div>
+        </div>
+        <div style="background:var(--blue-bg);border:1px solid var(--blue-bd);border-radius:var(--r-md);padding:0.8rem;text-align:center">
+          <div style="font-size:18px;margin-bottom:4px">💡</div>
+          <div style="font-size:12px;font-weight:600;color:var(--blue)">Answer Relevancy</div>
+          <div style="font-size:11px;color:var(--text2);margin-top:3px">La réponse répond-elle à la question ?</div>
+        </div>
+        <div style="background:var(--amber-bg);border:1px solid var(--amber-bd);border-radius:var(--r-md);padding:0.8rem;text-align:center">
+          <div style="font-size:18px;margin-bottom:4px">🔍</div>
+          <div style="font-size:12px;font-weight:600;color:var(--amber)">Context Precision</div>
+          <div style="font-size:11px;color:var(--text2);margin-top:3px">Les bons chunks ont-ils été récupérés ?</div>
+        </div>
+        <div style="background:var(--purple-bg);border:1px solid var(--purple-bd);border-radius:var(--r-md);padding:0.8rem;text-align:center">
+          <div style="font-size:18px;margin-bottom:4px">📚</div>
+          <div style="font-size:12px;font-weight:600;color:var(--purple)">Context Recall</div>
+          <div style="font-size:11px;color:var(--text2);margin-top:3px">Tous les passages pertinents ont-ils été trouvés ?</div>
+        </div>
       </div>
     </div>
     """, unsafe_allow_html=True)
- 
-    col1, col2 = st.columns([3,2])
+
+    col1, col2 = st.columns([3, 2])
     with col1:
         st.markdown('<p class="ev-sec-title">Questions de test</p>', unsafe_allow_html=True)
-        q1  = st.text_input("Question 1", placeholder="Ex: Conditions de leasing ?")
-        gt1 = st.text_area("Reponse attendue 1", height=70)
-        q2  = st.text_input("Question 2", placeholder="Ex: Ruptures de stock ?")
-        gt2 = st.text_area("Reponse attendue 2", height=70)
+        q1  = st.text_input("Question 1", placeholder="Ex: Quelles sont les conditions de leasing ?")
+        gt1 = st.text_area("Réponse attendue 1", height=70, placeholder="La réponse correcte attendue...")
+        q2  = st.text_input("Question 2", placeholder="Ex: Y a-t-il des ruptures de stock ?")
+        gt2 = st.text_area("Réponse attendue 2", height=70, placeholder="La réponse correcte attendue...")
     with col2:
         st.markdown('<p class="ev-sec-title">Configuration</p>', unsafe_allow_html=True)
-        agent_eval = st.selectbox("Agent a evaluer", ["politiques","stocks","commandes","clients"],
-            format_func=lambda x: {"politiques":"📋 Politiques","stocks":"📦 Stocks","commandes":"🚗 Commandes","clients":"⭐ Fidelisation"}[x])
+        agent_eval = st.selectbox("Agent à évaluer",
+            ["politiques","stocks","commandes","clients"],
+            format_func=lambda x: {"politiques":"📋 Politiques","stocks":"📦 Stocks","commandes":"🚗 Commandes","clients":"⭐ Fidélisation"}[x])
+        index_status_now = verifier_index(credential)
+        idx_map = {"politiques":INDEX_POLITIQUES,"stocks":INDEX_STOCKS,"commandes":INDEX_COMMANDES,"clients":INDEX_CLIENTS}
+        if not index_status_now.get(agent_eval, False):
+            st.markdown(f'<div class="ev-notif warn">⚠️ L\'index pour "{agent_eval}" n\'est pas créé. Allez dans l\'onglet Index pour l\'indexer.</div>', unsafe_allow_html=True)
+
         st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("Lancer RAGAS", use_container_width=True):
+        if st.button("📊 Lancer RAGAS", use_container_width=True):
             questions     = [q for q in [q1,q2] if q]
             ground_truths = [g for g in [gt1,gt2] if g]
+
             if not questions:
-                add_notif("Ajoutez au moins une question.", "warn")
+                add_notif("Ajoutez au moins une question de test.", "warn")
                 st.rerun()
             else:
-                with st.spinner("Calcul des metriques RAGAS..."):
+                with st.spinner("Calcul des métriques RAGAS..."):
                     try:
                         from ragas import evaluate
                         from ragas.metrics import faithfulness, answer_relevancy, context_precision, context_recall
                         from datasets import Dataset
+
                         answers, contexts = [], []
                         for q in questions:
                             r = orchestrer(q, agent_eval)
                             answers.append(r["reponse"])
                             contexts.append([r["reponse"]])
+
                         results = evaluate(
                             Dataset.from_dict({"question":questions,"answer":answers,"contexts":contexts,"ground_truth":ground_truths[:len(questions)]}),
                             metrics=[faithfulness,answer_relevancy,context_precision,context_recall]
                         )
                         st.session_state.ragas_results = results
-                        add_notif("Evaluation RAGAS terminee !", "success")
+                        add_notif("✅ Évaluation RAGAS terminée !", "success")
+
                     except ImportError:
-                        add_notif("pip install ragas datasets", "error")
+                        add_notif("RAGAS non installé : pip install ragas datasets", "error")
                     except Exception as e:
                         add_notif(f"Erreur RAGAS : {str(e)}", "error")
                 st.rerun()
- 
+
+    # Affichage résultats RAGAS
     if "ragas_results" in st.session_state:
         results = st.session_state.ragas_results
         st.markdown("---")
-        st.markdown('<p class="ev-sec-title">Resultats RAGAS</p>', unsafe_allow_html=True)
+        st.markdown('<p class="ev-sec-title">Résultats RAGAS</p>', unsafe_allow_html=True)
+
         scores = [
-            ("Faithfulness",      results.get("faithfulness",0),      "var(--accent)", "🎯"),
-            ("Answer Relevancy",  results.get("answer_relevancy",0),  "var(--blue)",   "💡"),
-            ("Context Precision", results.get("context_precision",0), "var(--amber)",  "🔍"),
-            ("Context Recall",    results.get("context_recall",0),    "var(--purple)", "📚"),
+            ("Faithfulness",      results.get("faithfulness",0),      "green",  "🎯"),
+            ("Answer Relevancy",  results.get("answer_relevancy",0),  "blue",   "💡"),
+            ("Context Precision", results.get("context_precision",0), "amber",  "🔍"),
+            ("Context Recall",    results.get("context_recall",0),    "purple", "📚"),
         ]
+
         cols = st.columns(4)
         for i, (label, score, color, icone) in enumerate(scores):
             score_pct = int(score * 100)
+            color_css = {"green":"var(--accent)","blue":"var(--blue)","amber":"var(--amber)","purple":"var(--purple)"}.get(color,"var(--accent)")
             with cols[i]:
                 st.markdown(f"""
                 <div class="ev-score-card">
                   <div style="font-size:1.5rem">{icone}</div>
-                  <div class="ev-score-val" style="color:{color}">{score:.2f}</div>
+                  <div class="ev-score-val" style="color:{color_css}">{score:.2f}</div>
                   <div class="ev-score-lbl">{label}</div>
-                  <div class="ev-score-bar"><div class="ev-score-fill" style="width:{score_pct}%;background:{color}"></div></div>
-                  <div style="font-size:10px;color:var(--text3);margin-top:4px">{'OK' if score>=0.8 else 'Moyen' if score>=0.6 else 'Faible'}</div>
+                  <div class="ev-score-bar">
+                    <div class="ev-score-fill" style="width:{score_pct}%;background:{color_css}"></div>
+                  </div>
+                  <div style="font-size:10px;color:var(--text3);margin-top:4px">{'✅ Bon' if score>=0.8 else '⚠️ Moyen' if score>=0.6 else '❌ Faible'}</div>
                 </div>
                 """, unsafe_allow_html=True)
- 
+
 # ── ONGLET LLM JUDGE ─────────────────────────────────────────────
 with tab_judge:
-    st.markdown('<p class="ev-sec-title">LLM as a Judge — GPT-4.5 evalue vos reponses</p>', unsafe_allow_html=True)
- 
+    st.markdown('<p class="ev-sec-title">LLM as a Judge — GPT-4.5 évalue vos réponses</p>', unsafe_allow_html=True)
+
     st.markdown("""
     <div style="background:var(--accent-bg);border:1px solid var(--accent-border);border-radius:var(--r-lg);padding:1rem 1.2rem;margin-bottom:1rem;font-size:13px;color:var(--accent)">
-      <strong>Principe :</strong> GPT-4.5 joue le role d'un expert humain et evalue la reponse de l'agent sur 3 criteres avec un score et des explications detaillees.
+      🧑‍⚖️ <strong>Principe :</strong> GPT-4.5 joue le rôle d'un expert humain et évalue la réponse de l'agent
+      sur 3 critères avec un score et des explications détaillées.
     </div>
     """, unsafe_allow_html=True)
- 
+
     col1, col2 = st.columns([3,2])
     with col1:
-        question_judge = st.text_input("Question a evaluer", placeholder="Ex: Quelle est la politique de remboursement ?")
-        agent_judge    = st.selectbox("Agent", ["politiques","stocks","commandes","clients"],
-            format_func=lambda x: {"politiques":"📋 Politiques","stocks":"📦 Stocks","commandes":"🚗 Commandes","clients":"⭐ Fidelisation"}[x],
+        question_judge = st.text_input("Question à évaluer", placeholder="Ex: Quelle est la politique de remboursement ?")
+        agent_judge    = st.selectbox("Agent",
+            ["politiques","stocks","commandes","clients"],
+            format_func=lambda x: {"politiques":"📋 Politiques","stocks":"📦 Stocks","commandes":"🚗 Commandes","clients":"⭐ Fidélisation"}[x],
             key="agent_judge_select")
+
     with col2:
         st.markdown("<br>", unsafe_allow_html=True)
-        lancer_judge = st.button("Evaluer avec GPT-4.5", use_container_width=True)
- 
+        lancer_judge = st.button("🧑‍⚖️ Évaluer avec GPT-4.5", use_container_width=True)
+
     if lancer_judge:
         if not question_judge.strip():
-            add_notif("Entrez une question a evaluer.", "warn")
+            add_notif("Entrez une question à évaluer.", "warn")
             st.rerun()
         else:
-            with st.spinner("GPT-4.5 evalue la reponse..."):
+            with st.spinner("GPT-4.5 évalue la réponse..."):
                 try:
-                    r      = orchestrer(question_judge, agent_judge)
+                    # 1. Obtenir la réponse de l'agent
+                    r = orchestrer(question_judge, agent_judge)
+
+                    # 2. LLM Judge
                     client = get_agent_client()
-                    prompt = f"""Tu es un expert en evaluation de systemes RAG automobile.
-Evalue cette reponse. Retourne UNIQUEMENT un JSON valide :
-{{"fidelite":{{"score":0,"commentaire":""}},"pertinence":{{"score":0,"commentaire":""}},"completude":{{"score":0,"commentaire":""}},"verdict":"BON","suggestion":""}}
-Scores de 0 a 10. Verdict : BON (moy>=8), MOYEN (>=6), MAUVAIS (<6).
+                    prompt = f"""
+Tu es un expert en evaluation de systemes RAG pour une concession automobile.
+Evalue cette reponse sur 3 criteres. Retourne UNIQUEMENT un JSON valide, sans texte avant ou apres :
+{{
+  "fidelite"  : {{"score": 0, "commentaire": ""}},
+  "pertinence": {{"score": 0, "commentaire": ""}},
+  "completude": {{"score": 0, "commentaire": ""}},
+  "verdict"   : "BON",
+  "suggestion": ""
+}}
+Les scores sont de 0 a 10.
+Le verdict est BON (score moyen >= 8), MOYEN (>= 6) ou MAUVAIS (< 6).
+
 QUESTION: {question_judge}
-REPONSE: {r['reponse'][:800]}"""
- 
+REPONSE DE L'AGENT: {r['reponse'][:800]}
+"""
                     async def eval_llm():
-                        a = client.as_agent(name="Judge", instructions="Tu evalues des reponses RAG. Reponds UNIQUEMENT en JSON valide.")
-                        return await a.run(prompt)
- 
-                    resp    = asyncio.get_event_loop().run_until_complete(eval_llm())
+                        agent = client.as_agent(name="Judge", instructions="Tu evalues des reponses RAG. Reponds UNIQUEMENT en JSON valide, sans markdown, sans backticks.")
+                        return await agent.run(prompt)
+
+                    def run_in_thread():
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        try:
+                            return loop.run_until_complete(eval_llm())
+                        finally:
+                            loop.close()
+
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                        resp = executor.submit(run_in_thread).result(timeout=120)
+
                     raw     = str(resp).replace("```json","").replace("```","").strip()
                     start_j = raw.find("{")
                     end_j   = raw.rfind("}") + 1
                     verdict = json.loads(raw[start_j:end_j])
-                    st.session_state.judge_result = {"verdict":verdict,"question":question_judge,"reponse":r["reponse"],"agent":r["agent"]}
-                    add_notif("Evaluation LLM terminee !", "success")
+                    st.session_state.judge_result = {"verdict": verdict, "question": question_judge, "reponse": r["reponse"], "agent": r["agent"]}
+                    add_notif("✅ Évaluation LLM terminée !", "success")
+
                 except Exception as e:
                     add_notif(f"Erreur : {str(e)}", "error")
             st.rerun()
- 
+
+    # Affichage résultat Judge
     if "judge_result" in st.session_state:
         jr      = st.session_state.judge_result
         verdict = jr["verdict"]
         v_class = {"BON":"bon","MOYEN":"moyen","MAUVAIS":"mauvais"}.get(verdict.get("verdict","MOYEN"),"moyen")
- 
+        v_color = {"BON":"var(--accent)","MOYEN":"var(--amber)","MAUVAIS":"var(--red)"}.get(verdict.get("verdict","MOYEN"),"var(--amber)")
+
         st.markdown("---")
+
+        # Question + reponse
         st.markdown(f"""
-        <div class="ev-q-block">
-          <div class="ev-q-label">Question evaluee</div>
+        <div class="ev-question-block">
+          <div class="ev-q-label">Question évaluée</div>
           <div class="ev-q-text">{jr["question"]}</div>
-          <div class="ev-q-rep">{jr["reponse"][:400]}{"..." if len(jr["reponse"])>400 else ""}</div>
-        </div>
-        <div class="ev-verdict {v_class}">
-          <div class="ev-verdict-title">Verdict : {verdict.get("verdict","?")} </div>
-          <div class="ev-verdict-body">Suggestion : {verdict.get("suggestion","")}</div>
+          <div class="ev-q-reponse">{jr["reponse"][:400]}{'...' if len(jr["reponse"])>400 else ''}</div>
         </div>
         """, unsafe_allow_html=True)
- 
+
+        # Verdict global
+        st.markdown(f"""
+        <div class="ev-verdict {v_class}">
+          <div class="ev-verdict-title">Verdict : {verdict.get("verdict","?")} </div>
+          <div class="ev-verdict-body">💡 <strong>Suggestion :</strong> {verdict.get("suggestion","")}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Scores détaillés
         scores_judge = [
-            ("Fidelite",   verdict.get("fidelite",{}),   "var(--accent)"),
-            ("Pertinence", verdict.get("pertinence",{}), "var(--blue)"),
-            ("Completude", verdict.get("completude",{}), "var(--amber)"),
+            ("🎯 Fidélité",   verdict.get("fidelite",{}),   "green"),
+            ("💡 Pertinence", verdict.get("pertinence",{}), "blue"),
+            ("📚 Complétude", verdict.get("completude",{}), "amber"),
         ]
         cols = st.columns(3)
         for i, (label, data, color) in enumerate(scores_judge):
             score     = data.get("score", 0)
-            comment   = data.get("commentaire","")
+            comment   = data.get("commentaire", "")
             score_pct = int(score * 10)
+            color_css = {"green":"var(--accent)","blue":"var(--blue)","amber":"var(--amber)"}.get(color,"var(--accent)")
             with cols[i]:
                 st.markdown(f"""
                 <div class="ev-score-card">
-                  <div class="ev-score-val" style="color:{color}">{score}<span style="font-size:1rem;color:var(--text3)">/10</span></div>
+                  <div class="ev-score-val" style="color:{color_css}">{score}<span style="font-size:1rem;color:var(--text3)">/10</span></div>
                   <div class="ev-score-lbl">{label}</div>
-                  <div class="ev-score-bar"><div class="ev-score-fill" style="width:{score_pct}%;background:{color}"></div></div>
+                  <div class="ev-score-bar">
+                    <div class="ev-score-fill" style="width:{score_pct}%;background:{color_css}"></div>
+                  </div>
                   <div style="font-size:11px;color:var(--text2);margin-top:6px;line-height:1.5">{comment}</div>
                 </div>
                 """, unsafe_allow_html=True)
