@@ -1,0 +1,637 @@
+================================================================================
+AUTOPLUS V2 — EXPLICATION DE CHAQUE PARTIE (SANS CODE)
+================================================================================
+Projet : Systeme multi-agents IA pour concession automobile
+================================================================================
+
+================================================================================
+1. APP.PY — POINT D'ENTREE
+================================================================================
+
+C'est le premier fichier que Streamlit lit quand tu lances l'application.
+Son seul role est de rediriger automatiquement vers la page Dashboard.
+
+Streamlit detecte automatiquement tous les fichiers dans le dossier pages/
+et cree la navigation entre les pages selon leur numero (1_, 2_, 3_, 4_).
+
+================================================================================
+2. FICHIER .ENV — CONFIGURATION
+================================================================================
+
+C'est le fichier le plus important a configurer.
+Il contient toutes les adresses et credentials Azure SANS les mettre dans le code.
+
+Il contient 3 groupes de variables :
+
+AZURE OPENAI :
+    L'adresse de ton service OpenAI sur Azure (endpoint)
+    Le nom de ton modele deploye (ex: gpt-4-5)
+    La version de l'API
+    Le nom du modele d'embeddings (Ada-002)
+
+AZURE AI SEARCH :
+    L'adresse de ton service de recherche Azure
+    C'est la que les documents PDF sont indexes
+
+AZURE SQL :
+    L'adresse de ton serveur SQL
+    Le nom de ta base de donnees
+    Le driver ODBC installe sur ta machine
+
+AZURE_ENV :
+    Si AZURE_ENV=local → utilise ton compte az login pour se connecter
+    Si absent → utilise ManagedIdentity (automatique sur App Service)
+    Ce switch evite de changer le code entre local et production
+
+================================================================================
+3. BACKEND/CONFIG/SETTINGS.PY — CERVEAU DU PROJET
+================================================================================
+
+C'est le seul fichier Python a modifier pour adapter le projet.
+Il lit le .env et expose toutes les valeurs de configuration au reste du code.
+
+SECTION COMPAGNIE :
+    Le nom et slogan qui apparaissent partout dans l'interface et les exports.
+
+SECTION INDEX :
+    Chaque agent a son propre index dans Azure AI Search.
+    Un index = une "bibliotheque" de documents pour un sujet precis.
+    Ces noms sont crees automatiquement dans Azure quand tu indexes.
+
+SECTION DOSSIERS :
+    Indique ou se trouvent tes fichiers PDF et Excel sur ton ordinateur.
+    Chaque agent a son propre dossier de donnees.
+
+SECTION PARAMETRES RAG :
+    CHUNK_SIZE : la taille des morceaux de texte (plus grand = plus de contexte)
+    CHUNK_OVERLAP : le chevauchement entre morceaux (evite de couper les phrases)
+    TOP_K_RESULTS : combien de passages retourner par recherche
+
+SECTION SEUILS STOCKS :
+    Les limites qui declenchent les alertes jaunes et rouges.
+    A ajuster selon ton volume d'affaires.
+
+SECTION COLONNES EXCEL :
+    Fait le lien entre le nom de tes colonnes Excel et le code.
+    Si ta colonne s'appelle "Quantite_Disponible" au lieu de "Quantite",
+    tu changes juste ici et tout le reste fonctionne.
+
+FONCTIONS DE CONNEXION :
+    Trois fonctions qui creent les connexions Azure automatiquement.
+    Elles s'occupent de l'authentification sans que tu aies a gerer les mots de passe.
+
+================================================================================
+4. BACKEND/AGENTS/AGENTS.PY — LES 4 AGENTS IA
+================================================================================
+
+C'est le coeur du systeme. Chaque agent est un assistant specialise qui
+utilise le SDK Microsoft Agent Framework (OpenAIChatCompletionClient).
+
+LA DIFFERENCE AVEC UN SIMPLE APPEL GPT :
+    Un appel GPT classique : tu envoies une question → GPT repond.
+    Un agent Microsoft : tu lui donnes des outils → il DECIDE seul quand
+    les utiliser, combien de fois chercher, et quand il a assez d'info.
+
+AGENT 1 — POLITIQUES DE VENTES :
+    Specialiste en leasing, financement, garanties, remises et conditions de vente.
+    Son seul outil est la recherche RAG dans tes documents PDF de politiques.
+    Il ne peut repondre que sur base de tes documents — pas d'invention.
+
+AGENT 2 — STOCKS ET PIECES :
+    Gestionnaire de stocks avec 3 outils plus le RAG.
+    Il peut voir tout l'inventaire, detecter les alertes, chercher une piece precise.
+    Il genere automatiquement les alertes CRITIQUE / ATTENTION / RETARD.
+
+AGENT 3 — COMMANDES :
+    Specialiste du suivi des commandes avec 3 outils plus le RAG.
+    Il peut voir toutes les commandes, en trouver une specifique,
+    et calculer des statistiques de ventes (top vendeurs, revenus, etc.).
+
+AGENT 4 — FIDELISATION CLIENTS :
+    Expert en retention client avec 4 outils plus le RAG.
+    Il identifie les clients VIP, ceux qui risquent de partir,
+    et propose des actions concretes pour les fideliser.
+
+FONCTION RUN_AGENT :
+    Les agents sont "asynchrones" (ils tournent en arriere-plan).
+    Streamlit est "synchrone" (il attend les reponses une par une).
+    run_agent() fait le pont entre les deux en utilisant un thread separe.
+    C'est pourquoi on n'a plus l'erreur "Can't patch loop of type uvloop".
+
+================================================================================
+5. BACKEND/TOOLS/ — LES OUTILS DES AGENTS
+================================================================================
+
+Un "tool" est une fonction Python que l'agent peut appeler pour obtenir des donnees.
+Chaque tool fait UNE seule chose bien precisement.
+Le decorateur @tool du SDK Microsoft dit a l'agent que cette fonction est disponible.
+
+POURQUOI SEPARER LES TOOLS DANS UN DOSSIER :
+    → Chaque fichier est independant et facile a modifier
+    → On peut tester un tool sans lancer toute l'application
+    → L'agent choisit seul quels outils utiliser et dans quel ordre
+
+RAG_TOOL.PY :
+    Un seul outil : chercher_documents.
+    Il prend une question, la transforme en vecteur mathematique (embedding),
+    cherche les passages les plus similaires dans Azure AI Search,
+    et retourne les extraits de texte avec leur source.
+    Ce tool est partage par tous les agents mais pointe vers des index differents.
+
+STOCKS_TOOL.PY — 3 outils :
+    lire_stocks → Lit le fichier Excel et affiche l'inventaire avec statut
+    detecter_alertes_stocks → Analyse tout le stock et retourne les problemes
+    chercher_piece → Trouve une piece specifique par son nom
+
+COMMANDES_TOOL.PY — 3 outils :
+    lire_commandes → Lit toutes les commandes avec filtre optionnel par statut
+    chercher_commande → Trouve une commande par son numero ou nom de client
+    statistiques_ventes → Calcule les KPIs globaux des ventes
+
+CLIENTS_TOOL.PY — 4 outils :
+    lire_clients → Liste tous les clients avec filtre par niveau de fidelite
+    identifier_clients_a_risque → Trouve les clients inactifs depuis X jours
+    clients_vip → Retourne les meilleurs clients par valeur d'achats
+    recommander_action_fidelisation → Analyse un client et propose des actions
+
+================================================================================
+6. BACKEND/ORCHESTRATEUR.PY — LE ROUTEUR
+================================================================================
+
+C'est le "chef d'orchestre" qui decide quel agent doit repondre a chaque question.
+
+COMMENT IL DECIDE :
+    Il analyse les mots de la question et compte les mots-cles de chaque categorie.
+    L'agent avec le plus de mots-cles correspondants est choisi.
+    Si aucun mot-cle n'est detecte, l'agent Politiques est utilise par defaut.
+
+EXEMPLE :
+    "Y a-t-il des ruptures de stock ?"
+    → "ruptures" et "stock" sont des mots-cles de l'agent Stocks
+    → L'orchestrateur envoie la question a l'agent Stocks
+
+FORCER UN AGENT :
+    L'utilisateur peut aussi choisir manuellement l'agent dans la sidebar.
+    Dans ce cas, l'orchestrateur ignore la detection automatique.
+
+MODIFIER LES MOTS-CLES :
+    Tu peux ajouter tes propres termes metier dans le dictionnaire MOTS_CLES.
+    Par exemple ajouter "vehicule de courtoisie" aux mots-cles des politiques.
+
+================================================================================
+7. BACKEND/INDEXER.PY — INDEXATION + TESTS RAGAS
+================================================================================
+
+Ce fichier a deux roles : indexer les documents et tester la qualite.
+
+PARTIE INDEXATION :
+    C'est le processus qui transforme tes PDFs en donnees searchables.
+
+    Etape 1 : Lire chaque page du PDF
+    Etape 2 : Decoupe le texte en morceaux de 500 mots (chunks)
+              avec un chevauchement de 50 mots pour ne pas couper les idees
+    Etape 3 : Pour chaque morceau, creer un "vecteur" de 1536 nombres
+              Ce vecteur capture le sens mathematique du texte
+    Etape 4 : Envoyer le texte ET son vecteur dans Azure AI Search
+    Etape 5 : Azure stocke tout et peut retrouver les passages pertinents
+
+    VERIFICATION AVANT INDEXATION :
+    index_existe() verifie si l'index a deja ete cree.
+    Si oui → on ne re-indexe pas (gain de temps et d'argent).
+    Si non → on cree l'index et on indexe tous les PDFs.
+
+PARTIE TESTS RAGAS :
+    Apres l'indexation, on peut tester si les agents repondent bien.
+    On donne des questions de test avec les reponses attendues.
+    RAGAS compare les reponses des agents avec les reponses attendues
+    et calcule 4 scores entre 0 et 1.
+
+================================================================================
+8. BACKEND/UTILS/RAG.PY — FONCTIONS RAG
+================================================================================
+
+RAG signifie Retrieval Augmented Generation.
+C'est la technique qui permet aux agents de repondre sur BASE de TES documents.
+
+SANS RAG :
+    GPT repond avec sa connaissance generale → peut inventer des choses.
+
+AVEC RAG :
+    On cherche d'abord les passages pertinents dans tes documents.
+    On donne ces passages a GPT comme contexte.
+    GPT repond UNIQUEMENT sur base de ces passages.
+
+LES 3 FONCTIONS :
+
+get_embedding :
+    Transforme un texte en vecteur de 1536 nombres.
+    Textes avec un sens similaire → vecteurs proches mathematiquement.
+    C'est comme traduire le sens d'une phrase en coordonnees GPS.
+
+rag_query :
+    Transforme la question en vecteur.
+    Cherche dans Azure AI Search les passages dont le vecteur est le plus proche.
+    Utilise la recherche hybride (semantique + mots-cles exacts).
+    Retourne les passages avec leur source (fichier + numero de page).
+
+appel_gpt :
+    Envoie la question ET les passages trouves a GPT-4.5.
+    Le system_prompt definit la personnalite de l'agent (ton expert en...).
+    GPT genere une reponse coherente basee uniquement sur les passages.
+    Retourne la reponse et le nombre de tokens consommes.
+
+================================================================================
+9. BACKEND/UTILS/SQL.PY — BASE DE DONNEES
+================================================================================
+
+Ce fichier gere toutes les operations sur Azure SQL Database.
+
+POURQUOI AZURE SQL PLUTOT QU'EXCEL :
+    Excel : fichier local, pas de multi-utilisateurs, pas de securite
+    Azure SQL : dans le cloud, multi-utilisateurs, securise, sauvegarde automatique
+
+CONNEXION SECURISEE :
+    On n'utilise PAS de mot de passe SQL.
+    On utilise un "token" Azure genere automatiquement depuis ton identite Azure.
+    En local : le token vient de ta session az login
+    Sur App Service : le token vient de la Managed Identity du serveur
+
+3 TABLES CREEES AUTOMATIQUEMENT :
+    stocks    → toutes tes pieces et voitures avec quantites et seuils
+    commandes → toutes les commandes clients avec statuts et montants
+    clients   → tous tes clients avec historique et niveau de fidelite
+
+LES 5 OPERATIONS (CRUD) :
+    Lire     → recuperer toutes les lignes d'une table
+    Ajouter  → inserer une nouvelle ligne
+    Modifier → mettre a jour une ligne existante
+    Supprimer → effacer une ligne
+    Importer → inserer en masse depuis un fichier Excel
+
+SWITCH LOCAL / PRODUCTION :
+    La variable AZURE_ENV=local dans le .env active DefaultAzureCredential.
+    Sans cette variable, ManagedIdentityCredential est utilise automatiquement.
+    Cela evite de modifier le code entre les deux environnements.
+
+================================================================================
+10. BACKEND/UTILS/EXPORT.PY — EXPORT
+================================================================================
+
+Permet a l'utilisateur de telecharger les reponses des agents.
+
+3 FORMATS DISPONIBLES :
+
+PDF :
+    Document professionnel avec en-tete au nom de la compagnie.
+    Style vert avec titres et texte structure.
+    Ideal pour partager des rapports ou des analyses.
+    Necessite la librairie reportlab.
+
+POWERPOINT :
+    Presentation avec une diapo par reponse d'agent.
+    Diapo de titre + diapos contenu + diapo de fin.
+    Ideal pour les reunions et presentations.
+    Necessite la librairie python-pptx.
+
+IMAGE PNG :
+    Capture visuelle de la reponse avec fond vert fonce.
+    Hauteur automatique selon la longueur du texte.
+    Ideal pour partager sur messagerie ou reseaux.
+    Necessite la librairie Pillow.
+
+================================================================================
+11. COMPONENTS/NAVBAR.PY — NAVIGATION
+================================================================================
+
+La barre de navigation visible en haut de toutes les pages.
+
+COMPOSANTS DE LA NAVBAR :
+    Logo a gauche → charge depuis photos/logo.png automatiquement
+                   Si aucun logo trouve, affiche un emoji 🚗
+    Liens au centre → un lien par page, le lien actif est surligné en vert
+    Badge a droite → affiche "Systeme operationnel" en vert
+                    ou le nombre d'alertes en rouge
+
+INJECT_BASE_CSS :
+    Fonction distincte qui injecte les variables CSS communes.
+    Doit etre appelee EN PREMIER sur chaque page, avant tout autre CSS.
+    Elle definit toutes les couleurs, polices, rayons et ombres
+    que les autres fichiers CSS utilisent via var(--accent), var(--bg), etc.
+
+IMPORTANT - ORDRE D'INJECTION :
+    1. inject_base_css()  → definit les variables
+    2. CSS de la page     → utilise les variables
+    3. get_navbar()       → utilise aussi les variables
+    Si l'ordre est inverse, la navbar s'affiche en HTML brut.
+
+================================================================================
+12. FRONTEND/STYLES/ — CSS SEPARES
+================================================================================
+
+Chaque page a son propre fichier CSS pour faciliter les modifications.
+Si tu veux changer la couleur d'un bouton sur la page SQL,
+tu modifies seulement azure_sql_css.py sans toucher aux autres pages.
+
+THEME.PY :
+    Style vert sombre utilise par les pages Dashboard et Evaluation.
+    Fond tres fonce avec texte clair et accents vert neon.
+    Inspire des terminaux de developpeurs.
+
+GESTION_DONNEES_CSS.PY :
+    Style clair pour la page CRUD.
+    Cards blanches sur fond vert tres clair.
+    Formulaires epures avec labels discrets.
+    Notifications colorees selon le type (succes/erreur/attention).
+
+AZURE_SQL_CSS.PY :
+    Style bleu pour la page de configuration SQL.
+    Indicateurs de connexion avec badge vert/rouge.
+    Zone de requete SQL avec fond sombre et texte vert (style terminal).
+    Tableau de stats avec grandes valeurs en police serif.
+
+VARIABLES CSS PARTAGEES :
+    Toutes les pages utilisent les memes variables definies dans inject_base_css().
+    Exemples : --accent (vert), --bg (fond), --text (texte), --border (bordures)
+    Changer --accent change la couleur principale PARTOUT dans l'application.
+
+================================================================================
+13. FRONTEND/COMPONENTS/HTML_BLOCKS.PY — BLOCS HTML
+================================================================================
+
+Fonctions Python qui retournent du HTML pre-formate.
+Utilise surtout par les pages Dashboard et Evaluation (ancien style sombre).
+
+POURQUOI DES FONCTIONS HTML :
+    Plutot que d'ecrire du HTML complexe directement dans les pages,
+    on l'encapsule dans des fonctions reutilisables.
+    Si le design change, on modifie un seul endroit.
+
+LES BLOCS DISPONIBLES :
+    header          → Le grand titre de l'application avec badge alertes
+    status_bar      → La barre d'informations avec statut des agents
+    metrics         → La grille de 4 chiffres cles en haut de page
+    notification    → Les messages de feedback colores
+    chat_user       → La bulle de message de l'utilisateur (droite)
+    chat_agent      → La bulle de reponse de l'agent (gauche) avec badge
+    alerte_stock    → Le bloc d'alerte colore selon la severite
+    sidebar_info    → Le panneau d'information dans la sidebar
+
+================================================================================
+14. PAGES/1_DASHBOARD.PY — PAGE PRINCIPALE
+================================================================================
+
+La page la plus importante, celle que tu vois en premier.
+
+DISPOSITION EN DEUX COLONNES :
+    Colonne gauche (plus large) :
+        Onglet Historique : Les dernieres activites des agents et la conversation
+        Onglet Alertes    : Les alertes de stock generees automatiquement
+        Onglet Donnees    : Tes fichiers Excel affiches en tableaux
+        Onglet Exporter   : Telecharger les reponses en PDF, PPTX ou PNG
+
+    Colonne droite (chat) :
+        Un panneau de chat fixe avec :
+        - Le nom de l'agent actif en haut
+        - Les derniers messages de la conversation
+        - 4 boutons de suggestions rapides pour les questions courantes
+        - Un champ texte pour poser sa question
+
+SIDEBAR :
+    Toggle pour activer/desactiver la detection automatique d'agent.
+    Si desactive : choix manuel de l'agent parmi les 4.
+    Section indexation rapide avec statut de chaque index.
+    Bouton pour effacer la conversation.
+
+FLUX D'UNE QUESTION :
+    L'utilisateur tape ou clique un bouton → la question est envoyee
+    L'orchestrateur detecte l'agent approprie
+    L'agent appelle ses outils et genere une reponse
+    La reponse s'affiche dans le chat
+    Si l'agent stocks a trouve des alertes, elles sont mises a jour
+    La derniere activite est enregistree dans les cartes d'historique
+
+================================================================================
+15. PAGES/2_EVALUATION_ET_INDEX.PY — EVALUATION RAG
+================================================================================
+
+Page technique pour les administrateurs du systeme.
+
+ONGLET GESTION DES INDEX :
+    Montre le statut de chacun des 4 index Azure AI Search.
+    Vert = index existe et contient des documents.
+    Rouge = index absent, il faut l'indexer.
+    Bouton pour indexer ou re-indexer un agent specifique.
+    Rappel des colonnes Excel requises pour chaque fichier.
+
+ONGLET EVALUATION RAGAS :
+    RAGAS est une librairie specialisee dans l'evaluation des systemes RAG.
+    Tu entres 1 ou 2 questions de test avec les reponses correctes attendues.
+    Le systeme pose ces questions aux agents et compare les reponses.
+    4 scores sont calcules entre 0 et 1 :
+        Faithfulness  : La reponse est-elle basee sur les documents ?
+        Answer Relevancy  : Repond-elle bien a la question posee ?
+        Context Precision : Les bons passages ont-ils ete recuperes ?
+        Context Recall    : Tous les passages pertinents ont-ils ete trouves ?
+    IMPORTANT : RAGAS utilise Azure OpenAI et non OpenAI standard.
+    Il faut configurer RAGAS avec LangchainLLMWrapper et AzureChatOpenAI.
+
+ONGLET LLM AS A JUDGE :
+    Une approche differente d'evaluation : GPT-4.5 joue l'expert humain.
+    Il evalue chaque reponse sur 3 criteres de 0 a 10.
+    Il donne aussi un verdict global (BON / MOYEN / MAUVAIS)
+    et une suggestion concrete pour ameliorer la reponse.
+    Avantage sur RAGAS : les explications sont en langage naturel.
+    IMPORTANT : Utilise ThreadPoolExecutor pour eviter l'erreur uvloop.
+
+================================================================================
+16. PAGES/3_GESTION_DONNEES.PY — CRUD SQL
+================================================================================
+
+Interface complete pour gerer tes donnees dans Azure SQL.
+
+POURQUOI CETTE PAGE EXISTE :
+    Plutot que de modifier tes fichiers Excel manuellement et re-indexer,
+    tu geres tes donnees directement dans Azure SQL via cette interface.
+    Les modifications sont instantanees et permanentes dans le cloud.
+
+STRUCTURE DE LA PAGE :
+    En haut : badge de statut SQL (connecte ou non) + bouton initialisation
+    4 onglets : Stocks / Commandes / Clients / Import Excel
+
+FONCTIONNEMENT DE CHAQUE ONGLET :
+    Colonne gauche : tableau de toutes les donnees + bouton supprimer
+    Colonne droite : formulaire pour ajouter ou modifier
+
+    Pour AJOUTER : remplis le formulaire avec un nouvel ID → clic Ajouter
+    Pour MODIFIER : entre l'ID existant + les nouvelles valeurs → clic Modifier
+    Pour SUPPRIMER : selectionne la ligne dans le menu deroulant → clic Supprimer
+
+ONGLET IMPORT EXCEL :
+    Si tu as deja des fichiers Excel avec tes donnees historiques,
+    tu peux les importer en une fois dans Azure SQL.
+    Glisse le fichier dans l'uploader → clic Importer.
+    Le systeme insere toutes les lignes et indique le nombre d'erreurs.
+
+BOUTON INITIALISER LES TABLES :
+    A cliquer UNE SEULE FOIS la premiere fois.
+    Cree les 3 tables stocks, commandes, clients dans Azure SQL.
+    Si les tables existent deja, ne fait rien (pas de perte de donnees).
+
+================================================================================
+17. PAGES/4_AZURE_SQL.PY — CONFIGURATION SQL
+================================================================================
+
+Page de monitoring et configuration de la connexion Azure SQL.
+
+COLONNE INFORMATIONS :
+    Affiche le serveur, la base de donnees, le type d'authentification.
+    Rappelle les variables .env necessaires avec leurs valeurs actuelles.
+    Si connecte, affiche le nombre de lignes dans chaque table en temps reel.
+
+COLONNE ACTIONS :
+    Tester la connexion : verifie que le serveur repond en moins de 5 secondes.
+    Initialiser les tables : cree les tables si elles n'existent pas.
+    Requete SQL : zone pour executer n'importe quelle requete directement.
+    Guide ODBC : commandes pour installer le driver ODBC selon le systeme.
+
+ZONE REQUETE SQL :
+    Tres utile pour diagnostiquer des problemes.
+    Exemples : compter les lignes, voir les stocks critiques, lister les clients VIP.
+    Attention : accepte toutes les requetes SQL, pas seulement SELECT.
+
+================================================================================
+18. REQUIREMENTS.TXT — LIBRAIRIES
+================================================================================
+
+Liste de toutes les librairies Python necessaires au projet.
+
+LIBRAIRIES PRINCIPALES :
+    agent-framework   → SDK Microsoft pour creer les agents IA
+    azure-identity    → Connexion Azure avec ManagedIdentity/DefaultCredential
+    azure-search-documents → Communication avec Azure AI Search
+    openai            → Client Azure OpenAI (GPT-4.5 et Ada-002)
+    streamlit         → Framework de l'interface graphique
+    pypdf             → Lecture des fichiers PDF pour l'indexation
+    pandas            → Manipulation des fichiers Excel et donnees
+    pyodbc            → Connexion a Azure SQL via ODBC
+
+LIBRAIRIES EVALUATION :
+    ragas             → Evaluation automatique du RAG (4 metriques)
+    datasets          → Format de donnees requis par RAGAS
+    langchain-openai  → Connexion Azure OpenAI pour RAGAS
+
+LIBRAIRIES EXPORT :
+    reportlab         → Creation de fichiers PDF
+    python-pptx       → Creation de presentations PowerPoint
+    Pillow            → Creation d'images PNG
+
+LIBRAIRIES UTILITAIRES :
+    nest_asyncio      → Compatibilite async dans Streamlit (local)
+    python-dotenv     → Lecture du fichier .env
+    openpyxl          → Lecture/ecriture fichiers Excel
+
+================================================================================
+19. DOSSIER PHOTOS/ — LOGO
+================================================================================
+
+Dossier simple qui contient le logo de l'application.
+
+Mets ton logo dans photos/logo.png ou photos/logo.jpg.
+La navbar le charge automatiquement et l'affiche a gauche.
+Si aucun logo n'est present, un emoji 🚗 est affiche a la place.
+Taille recommandee : 150x50 pixels, fond transparent de preference.
+
+================================================================================
+20. DOSSIER DATA/ — FICHIERS DE DONNEES
+================================================================================
+
+4 sous-dossiers, un par agent :
+
+data/politiques/
+    Tes PDFs de politiques de vente, conditions de leasing,
+    grilles de financement, conditions de garantie, etc.
+    Ces documents sont indexes dans Azure AI Search.
+
+data/stocks/
+    Le fichier stocks.xlsx avec tes pieces et voitures.
+    Optionnellement des PDFs de procedures de gestion des stocks.
+
+data/commandes/
+    Le fichier commandes.xlsx avec l'historique des commandes.
+    Optionnellement des PDFs de procedures de commandes.
+
+data/clients/
+    Le fichier clients.xlsx avec ta base clients.
+    Optionnellement des PDFs de programmes de fidelisation.
+
+COLONNES REQUISES :
+    Chaque fichier Excel doit avoir des colonnes avec des noms precis.
+    Ces noms sont definis dans la SECTION 7 de settings.py.
+    Si tes colonnes ont des noms differents, modifie settings.py.
+
+================================================================================
+21. AUTHENTIFICATION AZURE — COMMENT CA MARCHE
+================================================================================
+
+Le projet utilise l'authentification Azure sans jamais stocker de mot de passe.
+
+EN LOCAL (developpement) :
+    Tu fais az login une seule fois dans le terminal.
+    AZURE_ENV=local dans le .env active DefaultAzureCredential.
+    DefaultAzureCredential utilise automatiquement ta session az login.
+    Ton identite Azure est utilisee pour acceder a tous les services.
+
+SUR APP SERVICE (production) :
+    L'App Service a une "Managed Identity" (une identite propre au serveur).
+    ManagedIdentityCredential utilise automatiquement cette identite.
+    On donne des permissions a cette identite dans le portail Azure.
+    Aucun mot de passe, aucune cle API dans le code ou le serveur.
+
+PERMISSIONS NECESSAIRES :
+    Sur Azure OpenAI       → role "Cognitive Services OpenAI User"
+    Sur Azure AI Search    → role "Search Index Data Reader"
+    Sur Azure SQL          → admin dans Microsoft Entra du serveur SQL
+    Ces roles sont donnes via la page Identite > Attributions de roles Azure.
+
+================================================================================
+22. FLUX COMPLET D'UNE QUESTION — EXEMPLE CONCRET
+================================================================================
+
+Question : "Avons-nous des filtres a huile Toyota en stock ?"
+
+ETAPE 1 — Dashboard.py recoit la question
+    L'utilisateur tape la question et clique Envoyer.
+
+ETAPE 2 — Orchestrateur detecte l'agent
+    "filtres", "huile", "stock" sont des mots-cles de l'agent Stocks.
+    L'orchestrateur envoie la question a agent_stocks().
+
+ETAPE 3 — L'agent analyse la question
+    Le SDK Microsoft Agent Framework analyse la demande.
+    Il decide d'appeler d'abord chercher_piece("filtre huile Toyota").
+
+ETAPE 4 — Le tool stocks lit le fichier Excel
+    chercher_piece() ouvre stocks.xlsx.
+    Il filtre les lignes dont le nom contient "filtre" ET "huile".
+    Il retourne la quantite disponible, le fournisseur et la date de livraison.
+
+ETAPE 5 — L'agent decide s'il a assez d'information
+    Si la quantite est sous le seuil : il appelle aussi detecter_alertes_stocks()
+    pour voir s'il y a une alerte associee.
+    Si la quantite est normale : il a deja assez d'information.
+
+ETAPE 6 — L'agent genere la reponse avec GPT-4.5
+    Il envoie a GPT-4.5 :
+        Son role (gestionnaire de stocks AutoPlus)
+        Les donnees trouvees (quantite, fournisseur, etc.)
+        La question originale
+    GPT-4.5 formule une reponse claire et professionnelle.
+
+ETAPE 7 — La reponse s'affiche dans le chat
+    La reponse apparait dans la bulle de chat de l'agent Stocks.
+    Si des alertes ont ete generees, elles sont mises a jour dans l'onglet Alertes.
+    La derniere activite est enregistree dans les cartes d'historique.
+
+================================================================================
+FIN DU DOCUMENT
+================================================================================
