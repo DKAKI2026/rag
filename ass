@@ -2658,28 +2658,22 @@ def add_notif(msg, kind="success"):
     if len(st.session_state.em_notifs) > 3: st.session_state.em_notifs.pop(0)
 
 # ── Login employe simple ───────────────────────────────────────────
-if not st.session_state.em_login:
-    st.markdown(f"""
-    <div class="em-navbar">
-      <span class="em-nav-brand">👔 {COMPANY} — Espace Employé</span>
-    </div>
-    """, unsafe_allow_html=True)
+if not st.session_state.get("em_connecte", False):
+    st.markdown(f'<div class="em-navbar"><span class="em-nav-brand">👔 {COMPANY} — Espace Employé</span></div>', unsafe_allow_html=True)
+    
     col = st.columns([1,1,1])[1]
     with col:
-        st.markdown('<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r-xl);padding:2rem;box-shadow:var(--shadow-md)">', unsafe_allow_html=True)
         st.markdown("### 🔐 Connexion Employé")
-        with st.form("em_login"):
-            nom  = st.text_input("Nom de l'employé")
-            code = st.text_input("Code d'accès", type="password", placeholder="employe2024")
-            sub  = st.form_submit_button("Se connecter", use_container_width=True)
-        if sub:
-            if code == "employe2024" and nom.strip():
-                st.session_state.em_login = True
-                st.session_state.em_nom   = nom.strip()
+        code_saisi = st.text_input("Code d'accès", type="password", placeholder="employe2024")
+        nom_saisi  = st.text_input("Votre nom")
+        
+        if st.button("Se connecter", use_container_width=True):
+            if code_saisi == "employe2024" and nom_saisi.strip():
+                st.session_state["em_connecte"] = True
+                st.session_state["em_nom"]      = nom_saisi.strip()
                 st.rerun()
             else:
                 st.error("Code incorrect ou nom manquant.")
-        st.markdown('</div>', unsafe_allow_html=True)
     st.stop()
 
 # ── NAVBAR ─────────────────────────────────────────────────────────
@@ -2817,8 +2811,8 @@ with tab_tout:
                      use_container_width=True, height=500)
 
 if st.button("🚪 Se déconnecter"):
-    st.session_state.em_login = False
-    st.session_state.em_nom   = ""
+    st.session_state["em_connecte"] = False
+    st.session_state["em_nom"]      = ""
     st.rerun()
 ================================================================================
 FICHIER 19 : pages/3_Developpeur.py  [INCHANGÉ]
