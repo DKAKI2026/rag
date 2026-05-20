@@ -1,0 +1,658 @@
+================================================================================
+DOCUMENTATION PROJET — ASSURANCE AUTO DESJARDINS
+Cadys Operators — 2026
+================================================================================
+
+================================================================================
+FICHIER 1 : README.md
+================================================================================
+
+# Projet Assurance Auto Desjardins
+## Système de gestion des demandes d'assurance automobile
+
+---
+
+## Description
+
+Application web développée avec **Streamlit** et **Azure OpenAI** permettant de gérer
+les demandes d'assurance automobile de bout en bout. Le système intègre un pipeline
+multi-agents avec RAG (Retrieval-Augmented Generation) pour automatiser l'évaluation
+des demandes selon les règles métier de Desjardins.
+
+---
+
+## Architecture du projet
+
+```
+assurance_auto/
+├── app.py                          ← Page d'accueil (choix espace)
+├── .env                            ← Variables Azure (ne pas partager)
+├── requirements.txt
+├── runtime.txt                     ← Python 3.10
+├── startup.sh                      ← Script démarrage Azure
+├── .streamlit/
+│   └── config.toml                 ← Configuration Streamlit
+├── data/
+│   ├── labeled_applicants.csv      ← Données conducteurs
+│   ├── labeled_vehicles.csv        ← Données véhicules
+│   ├── labeled_additional_drivers.csv
+│   ├── licence_validation_hidden.csv
+│   ├── vin_blacklist_hidden.csv
+│   └── pdfs/                       ← Documents règles assurance
+├── demandes/
+│   └── demandes.xlsx               ← Fichier généré automatiquement
+├── backend/
+│   ├── config/
+│   │   └── settings.py             ← Configuration centrale Azure
+│   ├── rules/
+│   │   ├── scoring.py              ← Calcul score de risque
+│   │   ├── blacklist.py            ← Vérification refus directs
+│   │   └── decisions.py            ← Moteur de décision final
+│   ├── agents/
+│   │   ├── agent_rag.py            ← Agent chatbot RAG
+│   │   ├── agent_souscription.py   ← Agent explication client
+│   │   ├── agent_tarification.py   ← Agent tarification VMR
+│   │   └── orchestrateur.py        ← Orchestrateur central
+│   └── utils/
+│       ├── csv_handler.py          ← Lecture fichiers CSV
+│       ├── demandes_excel.py       ← Gestion fichier Excel
+│       └── pdf_generator.py        ← Génération PDF confirmations
+├── frontend/
+│   └── styles/
+│       ├── client_css.py           ← CSS page client
+│       └── employe_dev_css.py      ← CSS pages employé/dev
+└── pages/
+    ├── 1_Client.py                 ← Interface client
+    ├── 2_Employe.py                ← Interface employé
+    └── 3_Developpeur.py            ← Interface développeur
+```
+
+---
+
+## Prérequis
+
+- Python 3.10
+- Compte Azure avec accès à :
+  - Azure OpenAI (modèle GPT-4)
+  - Azure AI Search
+  - Azure Identity
+
+---
+
+## Installation locale
+
+```bash
+# 1. Cloner le projet
+git clone https://github.com/votre-repo/assurance-auto.git
+cd assurance-auto
+
+# 2. Installer les dépendances
+pip install -r requirements.txt
+
+# 3. Configurer les variables d'environnement
+cp .env.example .env
+# Remplir les valeurs dans .env
+
+# 4. Indexer les PDFs (première fois uniquement)
+python -m backend.indexer
+
+# 5. Lancer l'application
+streamlit run app.py
+```
+
+---
+
+## Variables d'environnement (.env)
+
+```env
+AZURE_OPENAI_ENDPOINT=https://TON-NOM.openai.azure.com/
+AZURE_OPENAI_DEPLOYMENT=gpt-4-5
+AZURE_API_VERSION=2024-12-01-preview
+EMBEDDING_MODEL=text-embedding-ada-002
+AZURE_SEARCH_ENDPOINT=https://srch-team13.search.windows.net
+```
+
+---
+
+## Déploiement Azure App Service
+
+```bash
+# 1. Créer l'App Service (Linux, Python 3.10)
+az webapp up --name desjardins-assurances \
+             --resource-group votre-rg \
+             --runtime PYTHON:3.10
+
+# 2. Configurer la commande de démarrage
+# bash startup.sh
+
+# 3. Ajouter les variables d'environnement
+# Via Azure Portal → Configuration → Paramètres d'application
+```
+
+---
+
+## Accès aux interfaces
+
+| Interface | URL | Accès |
+|---|---|---|
+| Page d'accueil | `/` | Public |
+| Espace Client | `/1_Client` | applicant_id + code postal |
+| Espace Employé | `/2_Employe` | Code : `employe2024` |
+| Espace Développeur | `/3_Developpeur` | Accès direct |
+
+---
+
+## Technologies utilisées
+
+| Technologie | Usage |
+|---|---|
+| Streamlit | Interface web |
+| Azure OpenAI GPT-4 | Génération texte, analyse |
+| Azure AI Search | Index vectoriel RAG |
+| Azure Identity | Authentification sécurisée |
+| Pandas | Traitement données CSV/Excel |
+| ReportLab | Génération PDF |
+| pypdf | Lecture PDFs règles |
+
+---
+
+## Équipe
+
+Projet développé dans le cadre du hackathon Desjardins — Cadys Operators — 2026
+
+
+================================================================================
+FICHIER 2 : REGLES_METIER.md
+================================================================================
+
+# Règles Métier — Assurance Automobile Desjardins
+
+---
+
+## 1. Profils Conducteur
+
+Le profil est déterminé par les années de permis et la classe de permis.
+
+| Profil | Critère | Description |
+|---|---|---|
+| **Profil 1** | `years_licenced >= 15 ans` | Conducteur expérimenté |
+| **Profil 2** | `years_licenced >= 4 ans et < 15 ans` | Conducteur intermédiaire |
+| **Profil 3** | `years_licenced < 4 ans` OU classe `G1/G2` | Conducteur novice |
+
+---
+
+## 2. Table de Points par Profil
+
+Le score de risque est calculé en additionnant les points selon les événements
+au dossier du conducteur.
+
+| Événement | Profil 1 | Profil 2 | Profil 3 |
+|---|---|---|---|
+| Infraction mineure — 1re | 2 pts | 2 pts | 4 pts |
+| Infraction mineure — additionnelle | 4 pts | 5 pts | 6 pts |
+| Infraction majeure — chaque | 12 pts | 16 pts | 16 pts |
+| Conduite imprudente — chaque | 15 pts | 16 pts | 16 pts |
+| Infraction grave/criminelle — chaque | 16 pts | 16 pts | 16 pts |
+| Accident responsable — 3 ans | 6 pts | 7 pts | 8 pts |
+| Accident responsable — 3 à 6 ans | 6 pts | 6 pts | 8 pts |
+| Annulation non-paiement — 1re | 4 pts | 4 pts | 4 pts |
+| Annulation non-paiement — additionnelle | 6 pts | 6 pts | 6 pts |
+
+### Seuil de refus par score
+```
+Score >= 12 points → REFUS automatique
+```
+
+---
+
+## 3. Refus Directs (Sans Calcul de Score)
+
+Ces conditions entraînent un refus immédiat, peu importe le score.
+
+### 3.1 Refus liés au conducteur
+
+| Condition | Description |
+|---|---|
+| `has_dui_5yr = True` | DUI dans les 5 dernières années |
+| `has_criminal_record_10yr = True` | Casier judiciaire dans les 10 ans |
+| `refused_insurance_3yr = True` | Assurance refusée ailleurs dans les 3 ans |
+| `refused_to_provide_info = True` | Refus de fournir les informations |
+| `no_insurable_interest = True` | Aucun intérêt assurable |
+| `owes_money_to_desjardins = True` | Dette envers Desjardins |
+| `has_misrepresentation_history = True` | Historique de fausse déclaration |
+| `licence_suspension_3yr = True` | Suspension de permis dans les 3 ans |
+
+### 3.2 Refus liés au véhicule
+
+| Condition | Description |
+|---|---|
+| VIN dans `vin_blacklist_hidden.csv` | Véhicule blacklisté |
+| `vehicle_value >= 500 000 $` | Valeur trop élevée (règle 27) |
+| `is_kit_car = True` | Véhicule kit car |
+| `is_used_on_racetrack = True` | Véhicule utilisé sur circuit |
+
+---
+
+## 4. Triggers de Vérification Humaine
+
+Ces conditions ne causent pas un refus automatique mais nécessitent
+une révision par un employé.
+
+| Condition | Code trigger | Description |
+|---|---|---|
+| `vehicle_value` entre 200k et 500k$ | `high_value_vehicle` | Véhicule haute valeur |
+| `is_modified = True` ET `modification_value >= 2000$` | `modified_vehicle` | Véhicule modifié significativement |
+| `is_salvage = True` OU `is_rebuilt = True` | `salvage_or_rebuilt` | Véhicule salvage ou reconstruit |
+| `has_gap_in_coverage = True` | `gap_in_coverage` | Interruption de couverture |
+| `years_prior_insurance = 0` | `gap_in_coverage` | Aucune assurance préalable |
+| `has_foreign_driving_experience = True` | `foreign_experience` | Expérience de conduite étrangère |
+| `commercial_use_description` non vide | `commercial_use_borderline` | Usage commercial borderline |
+
+---
+
+## 5. Règle Spéciale — Conducteur Exclu (OPCF 28A)
+
+```
+Si is_excluded = True → les accidents et infractions du conducteur
+                        ne sont PAS comptabilisés dans le score total.
+```
+
+---
+
+## 6. Tarification VMR (Vehicle Make / Retail)
+
+### 6.1 Groupes de tarification (1 à 99)
+
+Le groupe VMR est déterminé par CODEVEH + ANVEH (code véhicule + année-modèle)
+et publié par l'actuaire statistique du Bureau d'assurance du Canada (BAC).
+
+| Groupe | Type de véhicule |
+|---|---|
+| 1 à 10 | Véhicules économiques à faible coût (ex: Corolla, Civic base) |
+| 11 à 20 | Berlines et VUS grand public |
+| 21 à 30 | Versions haut de gamme, VUS plus gros |
+| 31 à 40 | Berlines de luxe, variantes performance |
+| 41 à 50 | Luxe haut de gamme, véhicules exotiques |
+| 99 | Marqueur spécial — référence à la souscription obligatoire |
+
+### 6.2 Tarification selon la valeur (solution de repli)
+
+Quand le véhicule n'apparaît pas dans la table VMR.
+
+| Valeur du véhicule | Base annuelle Chapitre B |
+|---|---|
+| Moins de 10 000 $ | 280 $ |
+| 10 000 $ à 25 000 $ | 420 $ |
+| 25 000 $ à 50 000 $ | 640 $ |
+| 50 000 $ à 80 000 $ | 920 $ |
+| 80 000 $ à 200 000 $ | Surcharge selon la valeur |
+| 200 000 $ à 500 000 $ | Référence à la souscription spécialisée |
+| 500 000 $ et plus | Refus (règle 27) |
+
+### 6.3 Véhicule absent de la table VMR
+
+Causes fréquentes :
+- Année-modèle trop récente (groupes non encore publiés)
+- Importations rares ou kit cars
+- Véhicules modifiés
+- Véhicules antiques
+
+Processus de résolution :
+1. Système retourne le groupe 99
+2. Soumission signalée avec statut de référence
+3. Le souscripteur reçoit le dossier
+4. Attribution d'un groupe manuel selon véhicule comparable
+5. Délai de 1 à 3 jours ouvrables
+
+---
+
+## 7. Rabais Applicables
+
+| Condition | Rabais |
+|---|---|
+| Pneus hiver (`has_winter_tires`) | -5% |
+| Système antivol (`has_anti_theft`) | -3% |
+| Système de repérage (`has_tracking_system`) | Rabais selon PDFs |
+| Cours de conduite (`completed_driving_course`) | -5% |
+| Membre Desjardins existant (`is_existing_desjardins_member`) | -5% |
+| Assurance habitation Desjardins (`has_home_insurance`) | -7% |
+
+---
+
+## 8. Statuts Possibles d'une Demande
+
+| Statut | Description |
+|---|---|
+| `APPROUVE` | Demande acceptée par l'employé |
+| `VERIFICATION_HUMAINE` | En attente de révision par un employé |
+| `REFUSE` | Demande refusée automatiquement ou par l'employé |
+
+---
+
+## 9. Sources de Données
+
+| Fichier CSV | Contenu |
+|---|---|
+| `labeled_applicants.csv` | Profil conducteur principal |
+| `labeled_vehicles.csv` | Données véhicules |
+| `labeled_additional_drivers.csv` | Conducteurs additionnels |
+| `licence_validation_hidden.csv` | Validation des permis |
+| `vin_blacklist_hidden.csv` | VINs blacklistés |
+| `data/pdfs/` | Documents règles assurance (indexés dans Azure AI Search) |
+
+
+================================================================================
+FICHIER 3 : ORCHESTRATEUR_ET_AGENTS.md
+================================================================================
+
+# Orchestrateur et Agents — Documentation Technique
+
+---
+
+## Vue d'ensemble
+
+Le système utilise une architecture **multi-agents orchestrée** où chaque agent
+est spécialisé dans une tâche précise. L'orchestrateur coordonne leur exécution
+dans un pipeline séquentiel structuré.
+
+```
+┌─────────────────────────────────────────────────────┐
+│                    ORCHESTRATEUR                     │
+│                 orchestrateur.py                     │
+│                                                      │
+│  ┌──────────┐  ┌──────────┐  ┌───────────────────┐  │
+│  │ Agent RAG│  │  Agent   │  │     Agent         │  │
+│  │          │  │Souscript.│  │  Tarification VMR │  │
+│  │agent_rag │  │agent_sous│  │  agent_tarif.py   │  │
+│  │  .py     │  │ cript.py │  │                   │  │
+│  └──────────┘  └──────────┘  └───────────────────┘  │
+└─────────────────────────────────────────────────────┘
+```
+
+---
+
+## 1. Orchestrateur (`orchestrateur.py`)
+
+### Rôle
+Point d'entrée central qui coordonne tous les agents dans un pipeline
+séquentiel de 5 étapes. Il garantit l'ordre d'exécution, gère les erreurs
+et retourne un résultat enrichi.
+
+### Pipeline d'évaluation
+
+```
+[INPUT CLIENT + VÉHICULE]
+         │
+         ▼
+ÉTAPE 1 — Récupération données
+  - Conducteurs additionnels (csv_handler)
+  - Validation permis (csv_handler)
+         │
+         ▼
+ÉTAPE 2 — Règles métier (decisions.py)
+  - Vérification VIN blacklist
+  - Refus directs conducteur/véhicule
+  - Calcul score de risque
+  - Détection triggers vérification humaine
+         │
+         ├── REFUSE ──────────────────────────────────────┐
+         │                                                 │
+         ▼                                                 │
+ÉTAPE 3 — Tarification VMR (agent_tarification)           │
+  - Détermination groupe VMR via RAG + GPT                │
+  - Calcul prime via RAG + GPT                            │
+         │                                                 │
+         ▼                                                 │
+ÉTAPE 4 — Explication client (GPT)                        │
+  - Génération message personnalisé                       │
+         │                                                 │
+         ▼                                                 │
+ÉTAPE 5 — Sauvegarde Excel (demandes_excel)               │
+  - Création entrée dans demandes.xlsx                    │
+         │                                                 │
+         ▼                                                 ▼
+   RÉSULTAT FINAL ENRICHI ←──────────────── RÉSULTAT REFUS
+```
+
+### Fonctions exposées
+
+| Fonction | Appelée depuis | Description |
+|---|---|---|
+| `orchestrer_evaluation()` | `pages/1_Client.py` | Pipeline complet d'évaluation |
+| `orchestrer_analyse_employe()` | `pages/2_Employe.py` | Analyse IA d'une demande |
+| `orchestrer_chatbot()` | `pages/1_Client.py` | Chatbot RAG règles assurance |
+
+### Résultat retourné
+
+```python
+{
+    "statut"            : "REFUSE | VERIFICATION_HUMAINE | APPROUVE",
+    "score"             : int,          # score de risque /12
+    "profil"            : int,          # profil conducteur 1/2/3
+    "evaluation"        : dict,         # résultat decisions.py
+    "tarification"      : dict,         # résultat agent_tarification
+    "explication_client": str,          # message GPT pour le client
+    "demande_id"        : str,          # ID unique de la demande
+    "pipeline_log"      : list[dict],   # log de chaque étape avec durée
+    "duree_totale_ms"   : int,          # durée totale en millisecondes
+}
+```
+
+---
+
+## 2. Agent RAG (`agent_rag.py`)
+
+### Rôle
+Répond aux questions des clients sur les règles d'assurance automobile
+en se basant UNIQUEMENT sur les documents PDF indexés dans Azure AI Search.
+
+### Fonctionnement
+
+```
+Question client
+      │
+      ▼
+Génération embedding (Azure OpenAI)
+      │
+      ▼
+Recherche vectorielle (Azure AI Search)
+  - Index : index-regles-assurance
+  - Top K résultats : 5
+      │
+      ▼
+Construction du contexte (chunks PDF retrouvés)
+      │
+      ▼
+Appel GPT-4 avec contexte + question
+      │
+      ▼
+Réponse en français basée sur les documents
+```
+
+### Paramètres
+- **Modèle** : GPT-4 (Azure OpenAI)
+- **Temperature** : 0.3 (réponses cohérentes)
+- **Max tokens** : 600
+- **Historique** : 4 derniers messages conservés
+
+### Fonctions exposées
+
+| Fonction | Type | Description |
+|---|---|---|
+| `agent_chatbot_assurance()` | async | Répond à une question via RAG |
+| `chatbot_assurance()` | sync | Wrapper synchrone pour Streamlit |
+
+---
+
+## 3. Agent Souscription (`agent_souscription.py`)
+
+### Rôle
+Génère des explications textuelles claires pour le client et des analyses
+détaillées pour l'employé, basées sur les résultats d'évaluation.
+
+### Deux fonctions principales
+
+#### 3.1 Explication client
+Après l'évaluation, génère un message personnalisé selon le statut :
+- **REFUSE** : explication compassionnelle des raisons
+- **VERIFICATION_HUMAINE** : information sur le délai de traitement
+- **APPROUVE** : félicitations et détails de la prime
+
+#### 3.2 Analyse employé
+Fournit à l'employé une recommandation structurée :
+1. Analyse du risque (2-3 phrases)
+2. Points d'attention spécifiques (VMR, triggers, profil)
+3. Recommandation : APPROUVER / REFUSER + justification
+
+### Paramètres
+- **Modèle** : GPT-4 (Azure OpenAI)
+- **Temperature** : 0.4 (explication client) / 0.3 (analyse employé)
+- **Max tokens** : 300 (client) / 400 (employé)
+
+### Fonctions exposées
+
+| Fonction | Type | Description |
+|---|---|---|
+| `agent_evaluer_demande()` | async | Évaluation + explication (legacy) |
+| `agent_analyse_employe()` | async | Analyse pour l'employé |
+| `evaluer_demande_sync()` | sync | Wrapper legacy (préférer orchestrateur) |
+| `analyser_demande_employe_sync()` | sync | Wrapper pour analyse employé |
+
+---
+
+## 4. Agent Tarification VMR (`agent_tarification.py`)
+
+### Rôle
+Détermine le groupe de tarification VMR du véhicule et calcule la prime
+estimée en se basant UNIQUEMENT sur les règles des PDFs indexés.
+**Aucune formule codée en dur** — tout passe par le RAG + GPT.
+
+### Fonctionnement en 2 étapes
+
+#### Étape A — Détermination du groupe VMR
+```
+Véhicule (marque, modèle, année, valeur)
+      │
+      ▼
+Recherche RAG (vmr_vehicle_rating_fr + autres PDFs)
+  - Requête : "groupe tarification VMR {make} {model} {year}"
+  - Top K : 6 chunks
+      │
+      ▼
+GPT-4 détermine le groupe (1-99) selon l'échelle :
+  - Si trouvé dans table VMR → groupe précis
+  - Si absent → groupe 99 + référence souscription
+  - Si VMR indisponible → table de repli selon valeur
+      │
+      ▼
+Résultat : groupe_vmr + source + justification
+```
+
+#### Étape B — Calcul de la prime
+```
+Groupe VMR + profil conducteur + score risque + rabais
+      │
+      ▼
+Recherche RAG (règles de tarification, facteurs d'ajustement)
+  - Requête : "calcul prime groupe VMR {groupe} facteurs ajustement"
+  - Top K : 6 chunks
+      │
+      ▼
+GPT-4 calcule la prime selon les règles des PDFs :
+  - Base selon groupe VMR
+  - Ajustements profil conducteur
+  - Ajustements score de risque
+  - Application des rabais (pneus hiver, antivol, etc.)
+      │
+      ▼
+Résultat : prime annuelle + mensuelle + fourchette + composantes
+```
+
+### Résultat retourné
+
+```python
+{
+    "groupe_vmr"          : int,     # groupe 1-99
+    "source_vmr"          : str,     # "vmr_table | valeur_repli | groupe_99_reference"
+    "justification_vmr"   : str,     # explication du groupe choisi
+    "base_annuelle_repli" : float,   # base si repli (280$, 420$, etc.)
+    "prime_annuelle"      : float,   # prime estimée annuelle
+    "prime_mensuelle"     : float,   # prime estimée mensuelle
+    "fourchette_basse"    : float,   # borne basse de l'estimation
+    "fourchette_haute"    : float,   # borne haute de l'estimation
+    "composantes"         : list,    # détail base + majorations + rabais
+    "note_client"         : str,     # message court pour le client
+    "necessite_souscription_specialisee": bool,
+}
+```
+
+### Paramètres
+- **Modèle** : GPT-4 (Azure OpenAI)
+- **Temperature** : 0.1 (précision maximale pour les calculs)
+- **Max tokens** : 400 (VMR) / 600 (prime)
+
+---
+
+## 5. Interactions entre composants
+
+```
+pages/1_Client.py
+    │
+    ├── orchestrer_evaluation()
+    │       ├── csv_handler.get_conducteurs_additionnels()
+    │       ├── csv_handler.valider_licence()
+    │       ├── decisions.evaluer_demande()
+    │       │       ├── blacklist.verifier_vin_blacklist()
+    │       │       ├── blacklist.verifier_refus_directs()
+    │       │       ├── blacklist.verifier_vehicule_refus()
+    │       │       └── scoring.calculer_score_total()
+    │       ├── agent_tarification.agent_tarification_vmr()
+    │       │       ├── Azure AI Search (RAG VMR)
+    │       │       └── Azure OpenAI GPT-4
+    │       ├── Azure OpenAI GPT-4 (explication client)
+    │       └── demandes_excel.creer_demande()
+    │
+    └── orchestrer_chatbot()
+            └── agent_rag.agent_chatbot_assurance()
+                    ├── Azure AI Search (RAG règles)
+                    └── Azure OpenAI GPT-4
+
+pages/2_Employe.py
+    └── orchestrer_analyse_employe()
+            └── agent_souscription.agent_analyse_employe()
+                    └── Azure OpenAI GPT-4
+```
+
+---
+
+## 6. Gestion des erreurs
+
+Chaque agent inclut une gestion d'erreur avec fallback :
+
+| Agent | Erreur | Fallback |
+|---|---|---|
+| Agent RAG | Azure Search indisponible | Message "aucun document trouvé" |
+| Agent Tarification | Parsing JSON GPT échoue | Groupe 99 + référence souscription |
+| Agent Souscription | GPT timeout | Message d'erreur générique |
+| Orchestrateur | Agent tarification échoue | Conservation estimation basique |
+
+---
+
+## 7. Performance
+
+| Étape | Durée typique |
+|---|---|
+| Récupération données | < 100 ms |
+| Règles métier | < 50 ms |
+| Tarification VMR (RAG + GPT x2) | 8 à 15 secondes |
+| Explication client (GPT) | 3 à 5 secondes |
+| Sauvegarde Excel | < 200 ms |
+| **Total pipeline** | **12 à 20 secondes** |
+
+Le callback `on_progress` permet d'afficher la progression en temps réel
+dans l'interface Streamlit pendant l'exécution du pipeline.
+
+
+================================================================================
+FIN DE LA DOCUMENTATION
+================================================================================
