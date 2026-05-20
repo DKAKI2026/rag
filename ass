@@ -2208,38 +2208,34 @@ FICHIER 17 : pages/1_Client.py  [⚠️ VOIR NOTE CI-DESSOUS — passer à orche
 # ROLE    : Page principale client — login, chatbot, demande, statut
 # ==============================================================================
 
-# ==============================================================================
-# FICHIER : pages/1_Client.py
-# ROLE    : Page principale client — login, chatbot, demande, statut
-#           + Export PDF résumé de demande
-# ==============================================================================
-
 import streamlit as st
+import time
 from datetime import datetime
-
-from backend.utils.csv_handler         import verifier_login, get_vehicules_client, get_conducteurs_additionnels
-from backend.agents.orchestrateur      import orchestrer_evaluation, orchestrer_chatbot
-from backend.utils.demandes_excel      import lire_demandes_client
-from frontend.styles.client_css        import CLIENT_CSS
-from backend.utils.pdf_generator       import generer_pdf_demande
-
+ 
+from backend.utils.csv_handler      import verifier_login, get_vehicules_client, get_conducteurs_additionnels
+from backend.agents.agent_rag       import chatbot_assurance
+from backend.agents.agent_souscription import evaluer_demande_sync
+from backend.utils.demandes_excel   import lire_demandes_client
+from frontend.styles.client_css     import CLIENT_CSS
+from backend.config.settings        import COMPANY_NAME if hasattr(__import__('backend.config.settings', fromlist=['COMPANY_NAME']), 'COMPANY_NAME') else None
+ 
 COMPANY = "Desjardins Assurances"
-
+ 
 st.set_page_config(page_title=f"{COMPANY} — Espace Client", page_icon="🚗", layout="wide", initial_sidebar_state="collapsed")
 st.markdown(CLIENT_CSS, unsafe_allow_html=True)
-
-if "client"           not in st.session_state: st.session_state.client           = None
-if "chat_history"     not in st.session_state: st.session_state.chat_history     = []
-if "page_active"      not in st.session_state: st.session_state.page_active      = "accueil"
-if "notifs"           not in st.session_state: st.session_state.notifs           = []
-if "vehicule_choisi"  not in st.session_state: st.session_state.vehicule_choisi  = None
-if "evaluation"       not in st.session_state: st.session_state.evaluation       = None
-if "pipeline_status"  not in st.session_state: st.session_state.pipeline_status  = ""
-
+ 
+# ── Session state ──────────────────────────────────────────────────
+if "client"          not in st.session_state: st.session_state.client      = None
+if "chat_history"    not in st.session_state: st.session_state.chat_history = []
+if "page_active"     not in st.session_state: st.session_state.page_active  = "accueil"
+if "notifs"          not in st.session_state: st.session_state.notifs       = []
+if "vehicule_choisi" not in st.session_state: st.session_state.vehicule_choisi = None
+if "evaluation"      not in st.session_state: st.session_state.evaluation   = None
+ 
 def add_notif(msg, kind="info"):
     st.session_state.notifs.append({"msg": msg, "kind": kind})
     if len(st.session_state.notifs) > 3: st.session_state.notifs.pop(0)
-
+ 
 # ==============================================================================
 # PAGE LOGIN
 # ==============================================================================
@@ -2249,6 +2245,7 @@ if st.session_state.client is None:
       <span style="font-size:1.3rem;font-weight:700;color:#fff;font-family:var(--font-h)">🚗 {COMPANY}</span>
     </div>
     """, unsafe_allow_html=True)
+ 
     col_c = st.columns([1, 1.2, 1])[1]
     with col_c:
         st.markdown("""
@@ -2258,40 +2255,42 @@ if st.session_state.client is None:
           <div class="cl-login-sub">Connectez-vous pour accéder à vos assurances</div>
         </div>
         """, unsafe_allow_html=True)
+ 
         with st.form("login_form"):
             applicant_id = st.text_input("Numéro de client (applicant_id)", placeholder="Ex: APP001")
             postal_code  = st.text_input("Code postal", placeholder="Ex: H3A 1B1")
             submitted    = st.form_submit_button("Se connecter", use_container_width=True)
+ 
         if submitted:
             with st.spinner("Vérification..."):
                 result = verifier_login(applicant_id.strip(), postal_code.strip())
                 if result["success"]:
-                    st.session_state.client      = result["client"]
+                    st.session_state.client     = result["client"]
                     st.session_state.page_active = "accueil"
                     st.rerun()
                 else:
                     st.error(result["message"])
     st.stop()
-
+ 
 # ==============================================================================
-# CLIENT CONNECTÉ — NAVBAR
+# CLIENT CONNECTE — NAVBAR
 # ==============================================================================
 client = st.session_state.client
 prenom = client.get("first_name", "Client")
 nom    = client.get("last_name", "")
-
+ 
 pages = [
-    ("accueil", "🏠 Accueil"),
-    ("chatbot", "💬 Questions"),
-    ("demande", "📋 Nouvelle demande"),
-    ("statut",  "📊 Mes demandes"),
+    ("accueil",  "🏠 Accueil"),
+    ("chatbot",  "💬 Questions"),
+    ("demande",  "📋 Nouvelle demande"),
+    ("statut",   "📊 Mes demandes"),
 ]
-
+ 
 liens = "".join([
     f'<a href="#" class="cl-nav-link {"active" if st.session_state.page_active == p else ""}" onclick="return false;">{l}</a>'
     for p, l in pages
 ])
-
+ 
 st.markdown(f"""
 <div class="cl-navbar">
   <span class="cl-nav-brand">🚗 {COMPANY}</span>
@@ -2302,19 +2301,21 @@ st.markdown(f"""
   </div>
 </div>
 """, unsafe_allow_html=True)
-
+ 
+# Navigation par boutons (Streamlit ne supporte pas les hrefs dynamiques)
 col_nav = st.columns(len(pages))
 for i, (p, l) in enumerate(pages):
     with col_nav[i]:
         if st.button(l, use_container_width=True, key=f"nav_{p}"):
             st.session_state.page_active = p
             st.rerun()
-
+ 
+# Notifications
 for n in st.session_state.notifs:
     st.markdown(f'<div class="cl-notif {n["kind"]}">{n["msg"]}</div>', unsafe_allow_html=True)
-
+ 
 st.markdown("---")
-
+ 
 # ==============================================================================
 # PAGE ACCUEIL
 # ==============================================================================
@@ -2323,34 +2324,43 @@ if st.session_state.page_active == "accueil":
     <div class="cl-hero">
       <div class="cl-hero-welcome">Bienvenue</div>
       <div class="cl-hero-name">{prenom} {nom}</div>
-      <div class="cl-hero-desc">Gérez vos assurances automobiles · {client.get("city","")}, {client.get("province","")}</div>
+      <div class="cl-hero-desc">
+        Gérez vos assurances automobiles · {client.get("city","")}, {client.get("province","")}
+      </div>
     </div>
     """, unsafe_allow_html=True)
-
+ 
     col1, col2, col3 = st.columns(3)
     demandes = lire_demandes_client(str(client.get("applicant_id","")))
-
+ 
     with col1:
-        st.markdown(f'''<div class="cl-card" style="text-align:center">
+        nb_dem = len(demandes)
+        st.markdown(f"""
+        <div class="cl-card" style="text-align:center">
           <div style="font-size:2rem;margin-bottom:6px">📋</div>
-          <div style="font-size:1.6rem;font-weight:700;color:var(--accent)">{len(demandes)}</div>
+          <div style="font-size:1.6rem;font-weight:700;color:var(--accent)">{nb_dem}</div>
           <div style="font-size:12px;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px">Demandes total</div>
-        </div>''', unsafe_allow_html=True)
+        </div>
+        """, unsafe_allow_html=True)
     with col2:
         nb_att = len([d for d in demandes if d.get("statut") == "VERIFICATION_HUMAINE"])
-        st.markdown(f'''<div class="cl-card" style="text-align:center">
+        st.markdown(f"""
+        <div class="cl-card" style="text-align:center">
           <div style="font-size:2rem;margin-bottom:6px">⏳</div>
           <div style="font-size:1.6rem;font-weight:700;color:var(--amber)">{nb_att}</div>
           <div style="font-size:12px;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px">En attente</div>
-        </div>''', unsafe_allow_html=True)
+        </div>
+        """, unsafe_allow_html=True)
     with col3:
         nb_app = len([d for d in demandes if d.get("statut") == "APPROUVE"])
-        st.markdown(f'''<div class="cl-card" style="text-align:center">
+        st.markdown(f"""
+        <div class="cl-card" style="text-align:center">
           <div style="font-size:2rem;margin-bottom:6px">✅</div>
           <div style="font-size:1.6rem;font-weight:700;color:var(--green)">{nb_app}</div>
           <div style="font-size:12px;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px">Approuvées</div>
-        </div>''', unsafe_allow_html=True)
-
+        </div>
+        """, unsafe_allow_html=True)
+ 
     st.markdown('<p class="cl-sec-title" style="margin-top:1.5rem">Actions rapides</p>', unsafe_allow_html=True)
     col_a, col_b = st.columns(2)
     with col_a:
@@ -2359,16 +2369,17 @@ if st.session_state.page_active == "accueil":
     with col_b:
         if st.button("📋 Soumettre une nouvelle demande", use_container_width=True):
             st.session_state.page_active = "demande"; st.rerun()
-
+ 
     if st.button("🚪 Se déconnecter"):
         for k in list(st.session_state.keys()): del st.session_state[k]
         st.rerun()
-
+ 
 # ==============================================================================
 # PAGE CHATBOT
 # ==============================================================================
 elif st.session_state.page_active == "chatbot":
     st.markdown('<p class="cl-sec-title">Assistant assurance automobile</p>', unsafe_allow_html=True)
+ 
     st.markdown("""
     <div class="cl-chat-panel">
       <div class="cl-chat-head">
@@ -2380,13 +2391,15 @@ elif st.session_state.page_active == "chatbot":
       </div>
       <div class="cl-chat-msgs">
     """, unsafe_allow_html=True)
-
+ 
     if not st.session_state.chat_history:
         st.markdown(f"""
         <div class="cl-msg bot">
           <div class="cl-msg-av bot">🤖</div>
           <div class="cl-bubble">
             Bonjour {prenom} ! Je suis votre assistant assurance automobile.<br><br>
+            Je peux vous aider à comprendre nos règles d'assurance, les conditions de couverture,
+            les facteurs qui influencent votre prime, et bien plus.<br><br>
             Comment puis-je vous aider ?
           </div>
         </div>
@@ -2394,57 +2407,56 @@ elif st.session_state.page_active == "chatbot":
     else:
         for msg in st.session_state.chat_history[-8:]:
             role_class = "user" if msg["role"] == "user" else "bot"
-            av         = prenom[0] if msg["role"] == "user" else "🤖"
-            av_class   = "usr"    if msg["role"] == "user" else "bot"
+            av = prenom[0] if msg["role"] == "user" else "🤖"
+            av_class = "usr" if msg["role"] == "user" else "bot"
             st.markdown(f"""
             <div class="cl-msg {role_class}">
               <div class="cl-msg-av {av_class}">{av}</div>
               <div class="cl-bubble">{msg["content"]}</div>
             </div>
             """, unsafe_allow_html=True)
-
+ 
     st.markdown('</div></div>', unsafe_allow_html=True)
-
+ 
+    # Suggestions
     suggestions = ["Qu'est-ce qui influence ma prime ?", "Qu'est-ce qu'un accident responsable ?", "Puis-je ajouter un conducteur ?"]
     cols = st.columns(len(suggestions))
     for i, s in enumerate(suggestions):
         with cols[i]:
             if st.button(s, use_container_width=True, key=f"sug_{i}"):
                 st.session_state._chat_send = s
-
+ 
     with st.form("chat_form", clear_on_submit=True):
         question = st.text_input("", placeholder="Posez votre question...", label_visibility="collapsed")
         envoyer  = st.form_submit_button("Envoyer ➤", use_container_width=True)
-
+ 
     msg_a_envoyer = None
     if envoyer and question.strip():
         msg_a_envoyer = question.strip()
     elif hasattr(st.session_state, "_chat_send"):
         msg_a_envoyer = st.session_state._chat_send
         del st.session_state._chat_send
-
+ 
     if msg_a_envoyer:
         st.session_state.chat_history.append({"role": "user", "content": msg_a_envoyer})
         with st.spinner("Recherche dans les règles..."):
             try:
-                result = orchestrer_chatbot(msg_a_envoyer, st.session_state.chat_history[:-1])
+                result = chatbot_assurance(msg_a_envoyer, st.session_state.chat_history[:-1])
                 st.session_state.chat_history.append({"role": "assistant", "content": result["reponse"]})
             except Exception as e:
                 st.session_state.chat_history.append({"role": "assistant", "content": f"Désolé, une erreur s'est produite : {str(e)}"})
         st.rerun()
-
+ 
 # ==============================================================================
 # PAGE NOUVELLE DEMANDE
 # ==============================================================================
 elif st.session_state.page_active == "demande":
     st.markdown('<p class="cl-sec-title">Nouvelle demande d\'assurance automobile</p>', unsafe_allow_html=True)
-
-    # ── Affichage résultat après évaluation ───────────────────────
+ 
     if st.session_state.evaluation:
         ev  = st.session_state.evaluation
-        tar = ev.get("tarification") or {}
-        est = ev.get("evaluation", {}).get("estimation") or {}
-
+        est = ev.get("estimation") or {}
+ 
         statut_map = {
             "APPROUVE"            : ("vert",   "✅ Pré-approuvé"),
             "VERIFICATION_HUMAINE": ("orange", "⏳ En cours de traitement"),
@@ -2453,88 +2465,45 @@ elif st.session_state.page_active == "demande":
         color, label = statut_map.get(ev["statut"], ("bleu", ev["statut"]))
         st.markdown(f'<span class="cl-badge {color}" style="font-size:13px;padding:8px 16px">{label}</span>', unsafe_allow_html=True)
         st.markdown("<br>", unsafe_allow_html=True)
-
-        # Prime et résumé
-        if ev["statut"] != "REFUSE":
-            prime_aff = tar.get("prime_annuelle") or est.get("prime_annuelle", "N/A")
-            mois_aff  = tar.get("prime_mensuelle") or est.get("prime_mensuelle", "N/A")
-            groupe_aff = f"Groupe VMR {tar.get('groupe_vmr','?')}" if tar.get("groupe_vmr") else f"Profil {est.get('profil','')}"
-
+ 
+        if est and ev["statut"] != "REFUSE":
             c1, c2 = st.columns(2)
             with c1:
                 st.markdown(f"""
                 <div class="cl-estimation">
                   <div class="cl-est-label">Estimation prime annuelle</div>
-                  <div class="cl-est-val">{prime_aff}$</div>
-                  <div class="cl-est-sub">{mois_aff}$ / mois · {groupe_aff}</div>
+                  <div class="cl-est-val">{est.get('prime_annuelle','N/A')}$</div>
+                  <div class="cl-est-sub">{est.get('prime_mensuelle','N/A')}$ / mois · Profil {est.get('profil','')}</div>
                 </div>
                 """, unsafe_allow_html=True)
             with c2:
-                fourch = ""
-                if tar.get("fourchette_basse") and tar.get("fourchette_haute"):
-                    fourch = f"<br>Fourchette : {tar['fourchette_basse']:,.0f}$ – {tar['fourchette_haute']:,.0f}$"
                 st.markdown(f"""
                 <div class="cl-card">
                   <div class="cl-card-title">📋 Résumé</div>
                   <div style="font-size:13px;color:var(--text2);line-height:1.8">
-                    Score de risque : <strong>{ev.get('score',0)}/12</strong>{fourch}<br>
+                    Score de risque : <strong>{ev.get('score',0)}/12</strong><br>
                     Demande ID : <code style="font-size:11px">{ev.get('demande_id','')}</code>
                   </div>
                 </div>
                 """, unsafe_allow_html=True)
-
-            if tar.get("necessite_souscription_specialisee"):
-                st.warning("⚠️ Ce véhicule nécessite une souscription spécialisée (groupe VMR 99).")
-
-            # Détail composantes tarification
-            if tar.get("composantes"):
-                st.markdown('<div class="cl-card"><div class="cl-card-title">🧮 Détail tarification VMR</div>', unsafe_allow_html=True)
-                for comp in tar["composantes"]:
-                    signe = "+" if comp["type"] == "majoration" else ("-" if comp["type"] == "rabais" else "")
-                    st.markdown(f'<div style="font-size:13px;color:var(--text2)">• {comp["label"]} : {signe}{comp["montant"]:,.0f}$</div>', unsafe_allow_html=True)
-                st.markdown('</div>', unsafe_allow_html=True)
-
-        # Explication GPT
+ 
         st.markdown(f"""
         <div class="cl-card">
           <div class="cl-card-title">💬 Explication</div>
           <div style="font-size:13.5px;color:var(--text2);line-height:1.7">{ev.get('explication_client','')}</div>
         </div>
         """, unsafe_allow_html=True)
-
-        # ── BOUTONS : PDF + Nouvelle demande ──────────────────────
-        col_pdf, col_new = st.columns(2)
-
-        with col_pdf:
-            if ev["statut"] != "REFUSE":
-                try:
-                    pdf_bytes = generer_pdf_demande(
-                        client   = dict(client),
-                        vehicule = st.session_state.get("vehicule_choisi") or {},
-                        result   = ev,
-                    )
-                    st.download_button(
-                        label              = "📄 Télécharger le résumé PDF",
-                        data               = pdf_bytes,
-                        file_name          = f"demande_{ev.get('demande_id','resume')}.pdf",
-                        mime               = "application/pdf",
-                        use_container_width= True,
-                    )
-                except Exception as e:
-                    st.error(f"Erreur génération PDF : {str(e)}")
-
-        with col_new:
-            if st.button("➕ Soumettre une autre demande", use_container_width=True):
-                st.session_state.evaluation     = None
-                st.session_state.vehicule_choisi = None
-                st.rerun()
-
+ 
+        if st.button("➕ Soumettre une autre demande"):
+            st.session_state.evaluation = None
+            st.rerun()
         st.stop()
-
-    # ── Formulaire de demande ─────────────────────────────────────
+ 
+    # Formulaire vehicule
     vehicules = get_vehicules_client(str(client.get("applicant_id","")))
+ 
     tab_existant, tab_nouveau = st.tabs(["🚗 Véhicule existant", "➕ Nouveau véhicule"])
-
+ 
     with tab_existant:
         if not vehicules:
             st.info("Aucun véhicule enregistré. Utilisez l'onglet 'Nouveau véhicule'.")
@@ -2555,20 +2524,17 @@ elif st.session_state.page_active == "demande":
               </div>
             </div>
             """, unsafe_allow_html=True)
-
+ 
             if st.button("📋 Soumettre cette demande", use_container_width=True):
-                st.session_state.vehicule_choisi = dict(veh)
-                status_placeholder = st.empty()
-                def on_progress(msg): status_placeholder.info(msg)
                 with st.spinner("Évaluation en cours..."):
                     try:
-                        result = orchestrer_evaluation(dict(client), dict(veh), on_progress=on_progress)
-                        st.session_state.evaluation = result
-                        add_notif(f"Demande créée : {result.get('demande_id','')}", "success")
+                        ev = evaluer_demande_sync(dict(client), dict(veh))
+                        st.session_state.evaluation = ev
+                        add_notif(f"Demande créée : {ev.get('demande_id','')}", "success")
                     except Exception as e:
                         add_notif(f"Erreur : {str(e)}", "error")
                 st.rerun()
-
+ 
     with tab_nouveau:
         with st.form("form_nouveau_veh"):
             st.markdown('<div class="cl-form-title">🚗 Informations du véhicule</div>', unsafe_allow_html=True)
@@ -2580,9 +2546,9 @@ elif st.session_state.page_active == "demande":
                 model = st.text_input("Modèle", placeholder="Corolla")
                 trim  = st.text_input("Trim", placeholder="LE")
             with c3:
-                vin = st.text_input("VIN", placeholder="1HGCM82633A123456")
-                val = st.number_input("Valeur ($)", min_value=0, value=25000, step=1000)
-
+                vin   = st.text_input("VIN", placeholder="1HGCM82633A123456")
+                val   = st.number_input("Valeur ($)", min_value=0, value=25000, step=1000)
+ 
             c4, c5 = st.columns(2)
             with c4:
                 usage = st.selectbox("Type d'usage", ["Pleasure", "Commute", "Business"])
@@ -2592,51 +2558,48 @@ elif st.session_state.page_active == "demande":
                 is_lease = st.checkbox("Loué")
                 has_wint = st.checkbox("Pneus hiver")
                 has_anti = st.checkbox("Antivol")
-
+ 
             st.markdown('<div class="cl-form-title" style="margin-top:1rem">⚠️ Caractéristiques spéciales</div>', unsafe_allow_html=True)
             c6, c7, c8 = st.columns(3)
-            with c6: is_mod = st.checkbox("Modifié")
-            with c7: is_sal = st.checkbox("Salvage")
-            with c8: is_reb = st.checkbox("Reconstruit")
-
+            with c6: is_mod  = st.checkbox("Modifié")
+            with c7: is_sal  = st.checkbox("Salvage")
+            with c8: is_reb  = st.checkbox("Reconstruit")
+ 
             mod_val = 0
             if is_mod:
                 mod_val = st.number_input("Valeur des modifications ($)", min_value=0, value=0, step=100)
-
+ 
             sub = st.form_submit_button("📋 Soumettre la demande", use_container_width=True)
-
+ 
         if sub:
             veh_data = {
                 "vehicle_id": "NEW", "applicant_id": client.get("applicant_id"),
                 "year": annee, "make": make, "model": model, "trim": trim,
-                "vin": vin, "vehicle_value": val, "usage_type": usage, "annual_km": km,
-                "is_financed": is_fin, "is_leased": is_lease,
+                "vin": vin, "vehicle_value": val, "usage_type": usage,
+                "annual_km": km, "is_financed": is_fin, "is_leased": is_lease,
                 "has_winter_tires": has_wint, "has_anti_theft": has_anti,
                 "is_modified": is_mod, "modification_value_cad": mod_val,
                 "is_salvage": is_sal, "is_rebuilt": is_reb,
                 "is_kit_car": False, "is_right_hand_drive": False,
                 "is_used_on_racetrack": False,
             }
-            st.session_state.vehicule_choisi = veh_data
-            status_placeholder = st.empty()
-            def on_progress(msg): status_placeholder.info(msg)
             with st.spinner("Évaluation en cours..."):
                 try:
-                    result = orchestrer_evaluation(dict(client), veh_data, on_progress=on_progress)
-                    st.session_state.evaluation = result
-                    add_notif(f"Demande créée : {result.get('demande_id','')}", "success")
+                    ev = evaluer_demande_sync(dict(client), veh_data)
+                    st.session_state.evaluation = ev
+                    add_notif(f"Demande créée : {ev.get('demande_id','')}", "success")
                 except Exception as e:
                     add_notif(f"Erreur : {str(e)}", "error")
             st.rerun()
-
+ 
 # ==============================================================================
 # PAGE STATUT DES DEMANDES
 # ==============================================================================
 elif st.session_state.page_active == "statut":
     st.markdown('<p class="cl-sec-title">Mes demandes d\'assurance</p>', unsafe_allow_html=True)
-
+ 
     demandes = lire_demandes_client(str(client.get("applicant_id","")))
-
+ 
     if not demandes:
         st.markdown("""
         <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);padding:2.5rem;text-align:center;color:var(--text3)">
