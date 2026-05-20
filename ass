@@ -3066,125 +3066,601 @@ if st.button("🚪 Se déconnecter"):
 FICHIER 19 : pages/3_Developpeur.py  [INCHANGÉ]
 ================================================================================
 
+# ==============================================================================
+# FICHIER : pages/3_Developpeur.py
+# ROLE    : Interface développeur — RAG, RAGAS, LLM Judge, Données, CRUD CSV
+# ==============================================================================
+
 import streamlit as st
 import json, asyncio, concurrent.futures
+import pandas as pd
+import os
 
-from backend.utils.demandes_excel import lire_demandes, get_stats
-from backend.indexer               import index_existe, creer_index, indexer_pdfs
-from backend.config.settings       import (
+from backend.utils.demandes_excel   import lire_demandes, get_stats
+from backend.indexer                 import index_existe, creer_index, indexer_pdfs
+from backend.config.settings        import (
     get_credential, get_openai_client,
-    INDEX_REGLES, DOSSIER_PDFS, AZURE_OPENAI_DEPLOYMENT
+    INDEX_REGLES, DOSSIER_PDFS, AZURE_OPENAI_DEPLOYMENT,
+    CSV_APPLICANTS, CSV_VEHICLES, CSV_DRIVERS,
+    CSV_LICENCE_VALIDATION, CSV_VIN_BLACKLIST, DEMANDES_FILE
 )
 from frontend.styles.employe_dev_css import DEV_CSS
 
 COMPANY = "Desjardins Assurances"
 
-st.set_page_config(page_title=f"{COMPANY} — Développeur", page_icon="⚙️", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(
+    page_title=f"{COMPANY} — Développeur",
+    page_icon="⚙️", layout="wide",
+    initial_sidebar_state="collapsed"
+)
 st.markdown(DEV_CSS, unsafe_allow_html=True)
 
 # ── Session state ──────────────────────────────────────────────────
-if "dv_notifs"       not in st.session_state: st.session_state.dv_notifs       = []
-if "ragas_results"   not in st.session_state: st.session_state.ragas_results   = None
-if "judge_result"    not in st.session_state: st.session_state.judge_result    = None
+for k, v in {
+    "dv_notifs"    : [],
+    "ragas_results": None,
+    "judge_result" : None,
+    "crud_table"   : "applicants",
+    "crud_action"  : None,
+    "crud_row_idx" : None,
+}.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
 
 def add_notif(msg, kind="info"):
     st.session_state.dv_notifs.append({"msg": msg, "kind": kind})
-    if len(st.session_state.dv_notifs) > 3: st.session_state.dv_notifs.pop(0)
+    if len(st.session_state.dv_notifs) > 3:
+        st.session_state.dv_notifs.pop(0)
 
 @st.cache_resource
 def load_azure():
-    try: return get_credential(), get_openai_client()
-    except Exception as e: st.error(f"Erreur Azure : {e}"); st.stop()
-
-credential, openai_client = load_azure()
+    try:
+        return get_credential(), get_openai_client()
+    except Exception as e:
+        st.error(f"Erreur Azure : {e}")
+        st.stop()
 
 @st.cache_data(ttl=60)
 def check_index(_cred):
     return index_existe(_cred, INDEX_REGLES)
+
+credential, openai_client = load_azure()
 
 # ── NAVBAR ─────────────────────────────────────────────────────────
 st.markdown(f"""
 <div class="dv-navbar">
   <span class="dv-brand">⚙️ {COMPANY} — Dev Console</span>
   <div class="dv-nav-links">
-    <a href="/Client" class="dv-nav-link">🏠 Client</a>
-    <a href="/Employe" class="dv-nav-link">👔 Employé</a>
-    <a href="#" class="dv-nav-link active">⚙️ Dev</a>
+    <a href="/1_Client"      class="dv-nav-link">🏠 Client</a>
+    <a href="/2_Employe"     class="dv-nav-link">👔 Employé</a>
+    <a href="#"              class="dv-nav-link active">⚙️ Dev</a>
   </div>
 </div>
 """, unsafe_allow_html=True)
 
-# Notifications
 for n in st.session_state.dv_notifs:
-    st.markdown(f'<div class="dv-notif {n["kind"]}">{n["msg"]}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="dv-notif {n["kind"]}">{n["msg"]}</div>',
+                unsafe_allow_html=True)
 
 # ── KPI ────────────────────────────────────────────────────────────
 stats     = get_stats()
 idx_actif = check_index(credential)
-idx_badge = '<span class="dv-badge green">✅ Actif</span>' if idx_actif else '<span class="dv-badge red">❌ Absent</span>'
+idx_badge = '<span class="dv-badge green">✅ Actif</span>' if idx_actif \
+            else '<span class="dv-badge red">❌ Absent</span>'
 
 st.markdown(f"""
 <div class="dv-kpi-grid">
-  <div class="dv-kpi"><div class="dv-kpi-val">{stats["total"]}</div><div class="dv-kpi-lbl">Demandes total</div></div>
-  <div class="dv-kpi"><div class="dv-kpi-val" style="color:var(--amber)">{stats["en_attente"]}</div><div class="dv-kpi-lbl">En attente</div></div>
-  <div class="dv-kpi"><div class="dv-kpi-val" style="color:var(--green)">{stats["approuve"]}</div><div class="dv-kpi-lbl">Approuvées</div></div>
-  <div class="dv-kpi"><div class="dv-kpi-val" style="color:var(--red)">{stats["refuse"]}</div><div class="dv-kpi-lbl">Refusées</div></div>
+  <div class="dv-kpi">
+    <div class="dv-kpi-val">{stats["total"]}</div>
+    <div class="dv-kpi-lbl">Demandes total</div>
+  </div>
+  <div class="dv-kpi">
+    <div class="dv-kpi-val" style="color:var(--amber)">{stats["en_attente"]}</div>
+    <div class="dv-kpi-lbl">En attente</div>
+  </div>
+  <div class="dv-kpi">
+    <div class="dv-kpi-val" style="color:var(--green)">{stats["approuve"]}</div>
+    <div class="dv-kpi-lbl">Approuvées</div>
+  </div>
+  <div class="dv-kpi">
+    <div class="dv-kpi-val" style="color:var(--red)">{stats["refuse"]}</div>
+    <div class="dv-kpi-lbl">Refusées</div>
+  </div>
 </div>
 """, unsafe_allow_html=True)
 
-# ── ONGLETS ────────────────────────────────────────────────────────
-tab_index, tab_ragas, tab_judge, tab_data = st.tabs([
-    "🗂️ Index RAG", "📊 RAGAS", "🧑‍⚖️ LLM Judge", "📋 Données"
+# ── ONGLETS PRINCIPAUX ─────────────────────────────────────────────
+tab_index, tab_crud, tab_demandes, tab_ragas, tab_judge = st.tabs([
+    "🗂️ Index RAG",
+    "🗃️ Gestion des données",
+    "📋 Demandes",
+    "📊 RAGAS",
+    "🧑‍⚖️ LLM Judge",
 ])
 
-# ── INDEX ─────────────────────────────────────────────────────────
+# ==============================================================================
+# ONGLET 1 — INDEX RAG
+# ==============================================================================
 with tab_index:
-    st.markdown('<p class="dv-sec-title">Statut index Azure AI Search</p>', unsafe_allow_html=True)
-
+    st.markdown('<p class="dv-sec-title">Statut index Azure AI Search</p>',
+                unsafe_allow_html=True)
     st.markdown(f"""
-    <div class="dv-card" style="display:flex;align-items:center;justify-content:space-between">
+    <div class="dv-card" style="display:flex;align-items:center;
+                                justify-content:space-between">
       <div>
-        <div style="font-size:13.5px;font-weight:600;color:var(--text)">Index — règles assurance auto</div>
-        <div style="font-size:11px;color:var(--text3);margin-top:3px;font-family:var(--font-m)">{INDEX_REGLES}</div>
-        <div style="font-size:12px;color:var(--text2);margin-top:5px">PDFs dans : {DOSSIER_PDFS}/</div>
+        <div style="font-size:13.5px;font-weight:600;color:var(--text)">
+          Index — règles assurance auto
+        </div>
+        <div style="font-size:11px;color:var(--text3);
+                    font-family:var(--font-m)">{INDEX_REGLES}</div>
+        <div style="font-size:12px;color:var(--text2);margin-top:5px">
+          PDFs dans : {DOSSIER_PDFS}/
+        </div>
       </div>
       {idx_badge}
     </div>
     """, unsafe_allow_html=True)
 
-    col1, col2 = st.columns(2)
-    with col1:
+    c1, c2 = st.columns(2)
+    with c1:
         if st.button("⚡ Indexer les PDFs", use_container_width=True):
             with st.spinner("Indexation..."):
                 try:
                     if not idx_actif:
                         creer_index(credential, INDEX_REGLES)
-                    chunks, fichiers = indexer_pdfs(credential, openai_client, DOSSIER_PDFS, INDEX_REGLES)
+                    chunks, fichiers = indexer_pdfs(
+                        credential, openai_client, DOSSIER_PDFS, INDEX_REGLES
+                    )
                     add_notif(f"✅ {fichiers} PDFs · {chunks} chunks indexés", "success")
                     st.cache_data.clear()
                 except Exception as e:
                     add_notif(f"Erreur : {str(e)}", "error")
             st.rerun()
-    with col2:
+    with c2:
         if st.button("🔄 Rafraîchir", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
 
-    st.markdown('<p class="dv-sec-title" style="margin-top:1.5rem">Guide d\'indexation</p>', unsafe_allow_html=True)
-    st.markdown("""
-    <div style="background:var(--surface2);border:1px solid var(--border2);border-radius:var(--r-md);padding:1rem;font-family:var(--font-m);font-size:12px;color:var(--text2);line-height:1.8">
-      1. Placez vos PDFs dans : data/pdfs/<br>
-      2. Cliquez "Indexer les PDFs"<br>
-      3. L'index sera créé automatiquement si absent<br>
-      4. Re-indexer = cliquer à nouveau (chunks dupliqués sinon, nettoyer d'abord)
+# ==============================================================================
+# ONGLET 2 — CRUD DONNÉES
+# ==============================================================================
+with tab_crud:
+
+    # Mapping fichiers disponibles
+    TABLES = {
+        "applicants"  : {"label": "👤 Conducteurs",           "file": CSV_APPLICANTS,         "key_col": "applicant_id"},
+        "vehicles"    : {"label": "🚗 Véhicules",             "file": CSV_VEHICLES,            "key_col": "vehicle_id"},
+        "drivers"     : {"label": "👥 Conducteurs additionnels","file": CSV_DRIVERS,            "key_col": "applicant_id"},
+        "licences"    : {"label": "📋 Validation permis",     "file": CSV_LICENCE_VALIDATION,  "key_col": "applicant_id"},
+        "blacklist"   : {"label": "🚫 Blacklist VIN",         "file": CSV_VIN_BLACKLIST,       "key_col": "vin"},
+        "demandes"    : {"label": "📊 Demandes Excel",        "file": DEMANDES_FILE,           "key_col": "demande_id"},
+    }
+
+    # ── Sélecteur de table ────────────────────────────────────────
+    st.markdown('<p class="dv-sec-title">Sélectionner un fichier</p>',
+                unsafe_allow_html=True)
+
+    cols_tables = st.columns(len(TABLES))
+    for i, (key, info) in enumerate(TABLES.items()):
+        with cols_tables[i]:
+            selected = st.session_state.crud_table == key
+            style = "background:var(--accent-bg);color:var(--accent);border:1px solid var(--accent-bd);" \
+                    if selected else "background:var(--surface);color:var(--text2);border:1px solid var(--border);"
+            st.markdown(f"""
+            <div style="{style}border-radius:var(--r-md);padding:8px 6px;
+                        text-align:center;font-size:11.5px;font-weight:600;
+                        cursor:pointer;margin-bottom:4px">
+              {info['label']}
+            </div>
+            """, unsafe_allow_html=True)
+            if st.button(info["label"], key=f"tbl_{key}", use_container_width=True):
+                st.session_state.crud_table  = key
+                st.session_state.crud_action = None
+                st.session_state.crud_row_idx = None
+                st.rerun()
+
+    st.markdown("---")
+
+    # ── Charger les données ───────────────────────────────────────
+    table_key  = st.session_state.crud_table
+    table_info = TABLES[table_key]
+    file_path  = table_info["file"]
+    key_col    = table_info["key_col"]
+
+    def load_data(path):
+        try:
+            if path.endswith(".xlsx"):
+                return pd.read_excel(path)
+            else:
+                return pd.read_csv(path)
+        except Exception as e:
+            return pd.DataFrame()
+
+    def save_data(df, path):
+        try:
+            if path.endswith(".xlsx"):
+                df.to_excel(path, index=False)
+            else:
+                df.to_csv(path, index=False)
+            return True
+        except Exception as e:
+            return False
+
+    df = load_data(file_path)
+
+    # ── En-tête avec stats ────────────────────────────────────────
+    st.markdown(f"""
+    <div class="dv-card" style="display:flex;align-items:center;
+                                justify-content:space-between;margin-bottom:1rem">
+      <div>
+        <div style="font-size:14px;font-weight:600;color:var(--text)">
+          {table_info['label']}
+        </div>
+        <div style="font-size:11px;color:var(--text3);font-family:var(--font-m);
+                    margin-top:3px">{file_path}</div>
+      </div>
+      <div style="text-align:right">
+        <div style="font-size:1.4rem;font-weight:700;color:var(--accent);
+                    font-family:var(--font-m)">{len(df)}</div>
+        <div style="font-size:10px;color:var(--text3);text-transform:uppercase">
+          enregistrements
+        </div>
+      </div>
     </div>
     """, unsafe_allow_html=True)
 
-# ── RAGAS ─────────────────────────────────────────────────────────
-with tab_ragas:
-    st.markdown('<p class="dv-sec-title">Évaluation RAGAS — Azure OpenAI</p>', unsafe_allow_html=True)
+    if df.empty:
+        st.info("Fichier vide ou introuvable.")
+    else:
+        # ── Barre de recherche ────────────────────────────────────
+        recherche = st.text_input("🔍 Rechercher",
+                                   placeholder=f"Filtrer par {key_col} ou toute valeur...",
+                                   key="crud_search")
+        if recherche.strip():
+            mask = df.astype(str).apply(
+                lambda col: col.str.contains(recherche, case=False, na=False)
+            ).any(axis=1)
+            df_affiche = df[mask]
+        else:
+            df_affiche = df
 
-    col1, col2 = st.columns([3,2])
+        st.markdown(f'<p class="dv-sec-title">{len(df_affiche)} résultat(s)</p>',
+                    unsafe_allow_html=True)
+
+        # ── Actions CRUD ──────────────────────────────────────────
+        crud_tabs = st.tabs(["📋 Voir / Modifier", "➕ Ajouter", "🗑️ Supprimer", "📥 Importer / Exporter"])
+
+        # ────────────────────────────────────────────────────────
+        # TAB VOIR / MODIFIER
+        # ────────────────────────────────────────────────────────
+        with crud_tabs[0]:
+            st.markdown('<p class="dv-sec-title">Cliquez sur une ligne pour la modifier</p>',
+                        unsafe_allow_html=True)
+
+            # Afficher tableau avec sélection
+            cols_affichage = list(df_affiche.columns[:8])  # max 8 colonnes
+            df_display = df_affiche[cols_affichage].reset_index()
+            df_display.columns = ["#"] + cols_affichage
+
+            selected_idx = st.selectbox(
+                "Sélectionner un enregistrement à modifier",
+                options=df_affiche.index.tolist(),
+                format_func=lambda i: f"{df_affiche.loc[i, key_col] if key_col in df_affiche.columns else i}",
+                key="crud_select_edit"
+            )
+
+            if selected_idx is not None:
+                row = df_affiche.loc[selected_idx].to_dict()
+                st.markdown(f"""
+                <div class="dv-card">
+                  <div style="font-size:12px;font-weight:600;color:var(--accent);
+                              margin-bottom:12px;font-family:var(--font-m)">
+                    ✏️ Modifier — {row.get(key_col, selected_idx)}
+                  </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                with st.form(f"form_edit_{selected_idx}"):
+                    new_values = {}
+                    # Afficher les champs en grille 3 colonnes
+                    cols_list = list(row.keys())
+                    for i in range(0, len(cols_list), 3):
+                        chunk = cols_list[i:i+3]
+                        form_cols = st.columns(len(chunk))
+                        for j, col_name in enumerate(chunk):
+                            with form_cols[j]:
+                                val = row[col_name]
+                                new_values[col_name] = st.text_input(
+                                    col_name,
+                                    value=str(val) if pd.notna(val) else "",
+                                    key=f"edit_{selected_idx}_{col_name}"
+                                )
+
+                    c_save, c_cancel = st.columns(2)
+                    with c_save:
+                        saved = st.form_submit_button("💾 Sauvegarder",
+                                                       use_container_width=True)
+                    with c_cancel:
+                        cancelled = st.form_submit_button("✖ Annuler",
+                                                           use_container_width=True)
+
+                if saved:
+                    try:
+                        df_full = load_data(file_path)
+                        for col_name, new_val in new_values.items():
+                            # Conserver le type original
+                            orig_dtype = df_full[col_name].dtype
+                            try:
+                                if orig_dtype in ["int64", "int32"]:
+                                    df_full.at[selected_idx, col_name] = int(new_val)
+                                elif orig_dtype in ["float64", "float32"]:
+                                    df_full.at[selected_idx, col_name] = float(new_val)
+                                else:
+                                    df_full.at[selected_idx, col_name] = new_val
+                            except:
+                                df_full.at[selected_idx, col_name] = new_val
+                        if save_data(df_full, file_path):
+                            add_notif(f"✅ Enregistrement modifié avec succès", "success")
+                        else:
+                            add_notif("❌ Erreur lors de la sauvegarde", "error")
+                    except Exception as e:
+                        add_notif(f"❌ Erreur : {str(e)}", "error")
+                    st.rerun()
+
+            # Affichage tableau complet
+            st.markdown('<p class="dv-sec-title" style="margin-top:1.5rem">Tableau complet</p>',
+                        unsafe_allow_html=True)
+            st.dataframe(df_affiche, use_container_width=True, height=400)
+
+        # ────────────────────────────────────────────────────────
+        # TAB AJOUTER
+        # ────────────────────────────────────────────────────────
+        with crud_tabs[1]:
+            st.markdown('<p class="dv-sec-title">Ajouter un nouvel enregistrement</p>',
+                        unsafe_allow_html=True)
+
+            with st.form("form_add"):
+                new_row = {}
+                cols_list = list(df.columns)
+                for i in range(0, len(cols_list), 3):
+                    chunk = cols_list[i:i+3]
+                    form_cols = st.columns(len(chunk))
+                    for j, col_name in enumerate(chunk):
+                        with form_cols[j]:
+                            new_row[col_name] = st.text_input(
+                                col_name,
+                                placeholder=f"Entrez {col_name}",
+                                key=f"add_{col_name}"
+                            )
+                add_btn = st.form_submit_button("➕ Ajouter l'enregistrement",
+                                                 use_container_width=True)
+
+            if add_btn:
+                try:
+                    df_full = load_data(file_path)
+                    # Convertir les types
+                    for col_name in df_full.columns:
+                        orig_dtype = df_full[col_name].dtype
+                        val = new_row.get(col_name, "")
+                        try:
+                            if orig_dtype in ["int64", "int32"]:
+                                new_row[col_name] = int(val) if val else 0
+                            elif orig_dtype in ["float64", "float32"]:
+                                new_row[col_name] = float(val) if val else 0.0
+                        except:
+                            pass
+
+                    df_full = pd.concat(
+                        [df_full, pd.DataFrame([new_row])],
+                        ignore_index=True
+                    )
+                    if save_data(df_full, file_path):
+                        add_notif(f"✅ Enregistrement ajouté avec succès", "success")
+                    else:
+                        add_notif("❌ Erreur lors de la sauvegarde", "error")
+                except Exception as e:
+                    add_notif(f"❌ Erreur : {str(e)}", "error")
+                st.rerun()
+
+        # ────────────────────────────────────────────────────────
+        # TAB SUPPRIMER
+        # ────────────────────────────────────────────────────────
+        with crud_tabs[2]:
+            st.markdown('<p class="dv-sec-title">Supprimer un enregistrement</p>',
+                        unsafe_allow_html=True)
+
+            st.warning("⚠️ La suppression est irréversible. Assurez-vous d'avoir "
+                       "une sauvegarde avant de continuer.")
+
+            del_idx = st.selectbox(
+                "Sélectionner l'enregistrement à supprimer",
+                options=df_affiche.index.tolist(),
+                format_func=lambda i: (
+                    f"{df_affiche.loc[i, key_col] if key_col in df_affiche.columns else i} — "
+                    f"{df_affiche.loc[i].get('first_name', df_affiche.loc[i].get('vin', ''))}"
+                    if key_col in df_affiche.columns else str(i)
+                ),
+                key="crud_select_del"
+            )
+
+            if del_idx is not None:
+                row_preview = df_affiche.loc[del_idx].to_dict()
+                st.markdown(f"""
+                <div class="dv-card" style="border:1px solid var(--red-bd);
+                                            background:var(--red-bg)">
+                  <div style="font-size:12px;color:var(--red);font-weight:600;
+                              margin-bottom:8px">
+                    ⚠️ Enregistrement sélectionné pour suppression :
+                  </div>
+                  <div style="font-size:12px;color:var(--text2);
+                              font-family:var(--font-m)">
+                    {key_col} : <strong>{row_preview.get(key_col, del_idx)}</strong>
+                  </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                # Confirmation double
+                confirm = st.checkbox(
+                    f"Je confirme vouloir supprimer cet enregistrement",
+                    key="del_confirm"
+                )
+
+                if confirm:
+                    if st.button("🗑️ Supprimer définitivement",
+                                  use_container_width=True,
+                                  type="primary"):
+                        try:
+                            df_full = load_data(file_path)
+                            df_full = df_full.drop(index=del_idx).reset_index(drop=True)
+                            if save_data(df_full, file_path):
+                                add_notif("✅ Enregistrement supprimé", "success")
+                            else:
+                                add_notif("❌ Erreur lors de la suppression", "error")
+                        except Exception as e:
+                            add_notif(f"❌ Erreur : {str(e)}", "error")
+                        st.rerun()
+
+        # ────────────────────────────────────────────────────────
+        # TAB IMPORTER / EXPORTER
+        # ────────────────────────────────────────────────────────
+        with crud_tabs[3]:
+            col_imp, col_exp = st.columns(2)
+
+            with col_imp:
+                st.markdown('<p class="dv-sec-title">📤 Importer un fichier</p>',
+                            unsafe_allow_html=True)
+                st.info("L'import **remplace** le fichier existant. "
+                        "Téléchargez d'abord une sauvegarde.")
+
+                ext = "xlsx" if file_path.endswith(".xlsx") else "csv"
+                uploaded = st.file_uploader(
+                    f"Choisir un fichier .{ext}",
+                    type=[ext],
+                    key="crud_upload"
+                )
+                if uploaded:
+                    try:
+                        if ext == "xlsx":
+                            df_import = pd.read_excel(uploaded)
+                        else:
+                            df_import = pd.read_csv(uploaded)
+
+                        st.markdown(f"""
+                        <div class="dv-card">
+                          <div style="font-size:12px;color:var(--text2)">
+                            Aperçu : <strong>{len(df_import)} lignes</strong>,
+                            <strong>{len(df_import.columns)} colonnes</strong>
+                          </div>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        st.dataframe(df_import.head(5), use_container_width=True)
+
+                        if st.button("📤 Confirmer l'import", use_container_width=True):
+                            if save_data(df_import, file_path):
+                                add_notif(f"✅ {len(df_import)} enregistrements importés", "success")
+                            else:
+                                add_notif("❌ Erreur lors de l'import", "error")
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"Erreur lecture fichier : {str(e)}")
+
+            with col_exp:
+                st.markdown('<p class="dv-sec-title">📥 Exporter / Sauvegarder</p>',
+                            unsafe_allow_html=True)
+
+                # Export CSV
+                csv_data = df.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    label="⬇️ Télécharger en CSV",
+                    data=csv_data,
+                    file_name=f"{table_key}_export.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
+
+                st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
+                # Export Excel
+                import io
+                excel_buffer = io.BytesIO()
+                df.to_excel(excel_buffer, index=False)
+                st.download_button(
+                    label="⬇️ Télécharger en Excel",
+                    data=excel_buffer.getvalue(),
+                    file_name=f"{table_key}_export.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                )
+
+                st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+                st.markdown(f"""
+                <div class="dv-card">
+                  <div style="font-size:11px;color:var(--text3)">
+                    Fichier source : <code>{file_path}</code><br>
+                    Taille : <strong>{len(df)} lignes × {len(df.columns)} colonnes</strong>
+                  </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+# ==============================================================================
+# ONGLET 3 — DEMANDES
+# ==============================================================================
+with tab_demandes:
+    st.markdown('<p class="dv-sec-title">Toutes les demandes</p>',
+                unsafe_allow_html=True)
+
+    df_dem = lire_demandes()
+    if df_dem.empty:
+        st.info("Aucune demande.")
+    else:
+        c1, c2 = st.columns([2, 1])
+        with c1:
+            filtre = st.selectbox("Filtrer",
+                                   ["Tous", "VERIFICATION_HUMAINE", "APPROUVE", "REFUSE"],
+                                   key="dem_filtre")
+        with c2:
+            recherche_dem = st.text_input("🔍 Rechercher", key="dem_search")
+
+        df_filtered = df_dem.copy()
+        if filtre != "Tous":
+            df_filtered = df_filtered[df_filtered["statut"] == filtre]
+        if recherche_dem.strip():
+            mask = df_filtered.astype(str).apply(
+                lambda col: col.str.contains(recherche_dem, case=False, na=False)
+            ).any(axis=1)
+            df_filtered = df_filtered[mask]
+
+        st.markdown(f'<p class="dv-sec-title">{len(df_filtered)} demande(s)</p>',
+                    unsafe_allow_html=True)
+        st.dataframe(df_filtered, use_container_width=True, height=500)
+
+        # Export
+        col_a, col_b = st.columns(2)
+        with col_a:
+            csv_dem = df_filtered.to_csv(index=False).encode("utf-8")
+            st.download_button("⬇️ Exporter CSV",
+                                data=csv_dem,
+                                file_name="demandes_export.csv",
+                                mime="text/csv",
+                                use_container_width=True)
+        with col_b:
+            import io
+            buf = io.BytesIO()
+            df_filtered.to_excel(buf, index=False)
+            st.download_button("⬇️ Exporter Excel",
+                                data=buf.getvalue(),
+                                file_name="demandes_export.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                use_container_width=True)
+
+# ==============================================================================
+# ONGLET 4 — RAGAS
+# ==============================================================================
+with tab_ragas:
+    st.markdown('<p class="dv-sec-title">Évaluation RAGAS — Azure OpenAI</p>',
+                unsafe_allow_html=True)
+
+    col1, col2 = st.columns([3, 2])
     with col1:
         q1  = st.text_input("Question 1", placeholder="Qu'est-ce qu'un accident responsable ?")
         gt1 = st.text_area("Réponse attendue 1", height=65)
@@ -3193,15 +3669,16 @@ with tab_ragas:
     with col2:
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("📊 Lancer RAGAS", use_container_width=True):
-            questions     = [q for q in [q1,q2] if q]
-            ground_truths = [g for g in [gt1,gt2] if g]
+            questions    = [q for q in [q1, q2] if q]
+            ground_truths = [g for g in [gt1, gt2] if g]
             if not questions:
                 add_notif("Ajoutez au moins une question.", "error")
             else:
                 with st.spinner("Calcul RAGAS..."):
                     try:
                         from ragas import evaluate, RunConfig
-                        from ragas.metrics import faithfulness, answer_relevancy, context_precision, context_recall
+                        from ragas.metrics import (faithfulness, answer_relevancy,
+                                                    context_precision, context_recall)
                         from ragas.llms import LangchainLLMWrapper
                         from ragas.embeddings import LangchainEmbeddingsWrapper
                         from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
@@ -3209,7 +3686,10 @@ with tab_ragas:
                         from datasets import Dataset
                         import os
 
-                        tp = get_bearer_token_provider(credential, "https://cognitiveservices.azure.com/.default")
+                        tp = get_bearer_token_provider(
+                            credential,
+                            "https://cognitiveservices.azure.com/.default"
+                        )
                         rl = AzureChatOpenAI(
                             azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
                             azure_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT","gpt-4-5"),
@@ -3228,13 +3708,22 @@ with tab_ragas:
                             r = chatbot_assurance(q)
                             answers.append(r["reponse"])
                             contexts.append([r["reponse"]])
-                        metriques = [faithfulness, answer_relevancy, context_precision, context_recall]
+
+                        metriques = [faithfulness, answer_relevancy,
+                                     context_precision, context_recall]
                         for m in metriques:
                             m.llm        = LangchainLLMWrapper(rl)
                             m.embeddings = LangchainEmbeddingsWrapper(re)
+
                         results = evaluate(
-                            Dataset.from_dict({"question":questions,"answer":answers,"contexts":contexts,"ground_truth":ground_truths[:len(questions)]}),
-                            metrics=metriques, run_config=RunConfig(max_retries=3, timeout=120)
+                            Dataset.from_dict({
+                                "question"    : questions,
+                                "answer"      : answers,
+                                "contexts"    : contexts,
+                                "ground_truth": ground_truths[:len(questions)],
+                            }),
+                            metrics=metriques,
+                            run_config=RunConfig(max_retries=3, timeout=120)
                         )
                         st.session_state.ragas_results = results
                         add_notif("RAGAS terminé !", "success")
@@ -3246,41 +3735,53 @@ with tab_ragas:
 
     if st.session_state.ragas_results:
         results = st.session_state.ragas_results
-        st.markdown('<p class="dv-sec-title" style="margin-top:1.5rem">Résultats</p>', unsafe_allow_html=True)
+        st.markdown('<p class="dv-sec-title" style="margin-top:1.5rem">Résultats</p>',
+                    unsafe_allow_html=True)
 
         def get_score(res, key):
             import numpy as np
             try:
                 val = res[key]
-                if isinstance(val, list): return round(float(np.mean(val)), 2)
+                if isinstance(val, list):
+                    return round(float(np.mean(val)), 2)
                 return round(float(val), 2)
-            except: return 0.0
+            except:
+                return 0.0
 
         scores = [
-            ("Faithfulness",     get_score(results,"faithfulness"),     "var(--green)"),
-            ("Answer Relevancy", get_score(results,"answer_relevancy"),  "var(--accent)"),
-            ("Ctx Precision",    get_score(results,"context_precision"), "var(--amber)"),
-            ("Ctx Recall",       get_score(results,"context_recall"),    "var(--red)"),
+            ("Faithfulness",    get_score(results,"faithfulness"),      "var(--green)"),
+            ("Answer Relevancy",get_score(results,"answer_relevancy"),  "var(--accent)"),
+            ("Ctx Precision",   get_score(results,"context_precision"), "var(--amber)"),
+            ("Ctx Recall",      get_score(results,"context_recall"),    "var(--red)"),
         ]
-        cols = st.columns(4)
+        cols_r = st.columns(4)
         for i, (label, score, color) in enumerate(scores):
-            pct = int(score * 100)
-            with cols[i]:
+            with cols_r[i]:
                 st.markdown(f"""
                 <div class="dv-score-card">
                   <div class="dv-score-val" style="color:{color}">{score:.2f}</div>
                   <div class="dv-score-lbl">{label}</div>
-                  <div class="dv-score-bar"><div class="dv-score-fill" style="width:{pct}%;background:{color}"></div></div>
+                  <div class="dv-score-bar">
+                    <div class="dv-score-fill"
+                         style="width:{int(score*100)}%;background:{color}">
+                    </div>
+                  </div>
                 </div>
                 """, unsafe_allow_html=True)
 
-# ── LLM JUDGE ─────────────────────────────────────────────────────
+# ==============================================================================
+# ONGLET 5 — LLM JUDGE
+# ==============================================================================
 with tab_judge:
-    st.markdown('<p class="dv-sec-title">LLM as a Judge</p>', unsafe_allow_html=True)
+    st.markdown('<p class="dv-sec-title">LLM as a Judge</p>',
+                unsafe_allow_html=True)
 
-    col1, col2 = st.columns([3,2])
+    col1, col2 = st.columns([3, 2])
     with col1:
-        question_j = st.text_input("Question à évaluer", placeholder="Quand est-ce qu'une demande est refusée directement ?")
+        question_j = st.text_input(
+            "Question à évaluer",
+            placeholder="Quand est-ce qu'une demande est refusée directement ?"
+        )
     with col2:
         st.markdown("<br>", unsafe_allow_html=True)
         lancer = st.button("🧑‍⚖️ Évaluer", use_container_width=True)
@@ -3290,13 +3791,12 @@ with tab_judge:
             try:
                 from backend.agents.agent_rag import chatbot_assurance
                 r = chatbot_assurance(question_j)
-                prompt = f"""
-Tu evalues une reponse RAG assurance auto. JSON uniquement :
+                prompt = f"""Tu evalues une reponse RAG assurance auto. JSON uniquement :
 {{"fidelite":{{"score":0,"commentaire":""}},"pertinence":{{"score":0,"commentaire":""}},"completude":{{"score":0,"commentaire":""}},"verdict":"BON","suggestion":""}}
 Scores 0-10. Verdict: BON(>=8), MOYEN(>=6), MAUVAIS(<6)
 QUESTION: {question_j}
-REPONSE: {r["reponse"][:600]}
-"""
+REPONSE: {r["reponse"][:600]}"""
+
                 async def eval_j():
                     resp = openai_client.chat.completions.create(
                         model=AZURE_OPENAI_DEPLOYMENT,
@@ -3306,15 +3806,25 @@ REPONSE: {r["reponse"][:600]}
                     return resp.choices[0].message.content
 
                 def run():
-                    loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
-                    try: return loop.run_until_complete(eval_j())
-                    finally: loop.close()
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        return loop.run_until_complete(eval_j())
+                    finally:
+                        loop.close()
 
-                raw = concurrent.futures.ThreadPoolExecutor(max_workers=1).submit(run).result(timeout=60)
-                raw = raw.replace("```json","").replace("```","").strip()
-                j   = raw.find("{"); e = raw.rfind("}")+1
-                verdict = json.loads(raw[j:e])
-                st.session_state.judge_result = {"verdict":verdict,"question":question_j,"reponse":r["reponse"]}
+                raw     = concurrent.futures.ThreadPoolExecutor(
+                            max_workers=1
+                          ).submit(run).result(timeout=60)
+                raw     = raw.replace("```json","").replace("```","").strip()
+                j_start = raw.find("{")
+                j_end   = raw.rfind("}") + 1
+                verdict = json.loads(raw[j_start:j_end])
+                st.session_state.judge_result = {
+                    "verdict" : verdict,
+                    "question": question_j,
+                    "reponse" : r["reponse"],
+                }
                 add_notif("Évaluation terminée !", "success")
             except Exception as e:
                 add_notif(f"Erreur : {str(e)}", "error")
@@ -3323,52 +3833,57 @@ REPONSE: {r["reponse"][:600]}
     if st.session_state.judge_result:
         jr  = st.session_state.judge_result
         v   = jr["verdict"]
-        vc  = {"BON":"var(--green)","MOYEN":"var(--amber)","MAUVAIS":"var(--red)"}.get(v.get("verdict","MOYEN"),"var(--amber)")
+        vc  = {"BON":"var(--green)","MOYEN":"var(--amber)","MAUVAIS":"var(--red)"}.get(
+               v.get("verdict","MOYEN"), "var(--amber)")
 
         st.markdown(f"""
-        <div style="background:var(--surface2);border:1px solid var(--border2);border-radius:var(--r-md);padding:1rem;margin-bottom:1rem;font-size:13px;color:var(--text2)">
+        <div style="background:var(--surface2);border:1px solid var(--border2);
+                    border-radius:var(--r-md);padding:1rem;margin-bottom:1rem;
+                    font-size:13px;color:var(--text2)">
           <strong style="color:var(--text)">Q:</strong> {jr["question"]}<br>
           <strong style="color:var(--text)">R:</strong> {jr["reponse"][:300]}...
         </div>
-        <div style="background:var(--surface);border:1px solid var(--border2);border-radius:var(--r-lg);padding:1.2rem;margin-bottom:1rem">
-          <div style="font-size:1.2rem;font-weight:700;color:{vc};margin-bottom:6px">Verdict : {v.get("verdict","?")} </div>
-          <div style="font-size:13px;color:var(--text2)">💡 {v.get("suggestion","")}</div>
+        <div style="background:var(--surface);border:1px solid var(--border2);
+                    border-radius:var(--r-lg);padding:1.2rem;margin-bottom:1rem">
+          <div style="font-size:1.2rem;font-weight:700;color:{vc};margin-bottom:6px">
+            Verdict : {v.get("verdict","?")}
+          </div>
+          <div style="font-size:13px;color:var(--text2)">
+            💡 {v.get("suggestion","")}
+          </div>
         </div>
         """, unsafe_allow_html=True)
 
-        cols = st.columns(3)
+        cols_j = st.columns(3)
         for i, (label, data, color) in enumerate([
-            ("Fidélité",   v.get("fidelite",{}),   "var(--green)"),
-            ("Pertinence", v.get("pertinence",{}), "var(--accent)"),
-            ("Complétude", v.get("completude",{}), "var(--amber)"),
+            ("Fidélité",    v.get("fidelite",{}),   "var(--green)"),
+            ("Pertinence",  v.get("pertinence",{}), "var(--accent)"),
+            ("Complétude",  v.get("completude",{}), "var(--amber)"),
         ]):
-            sc  = data.get("score",0)
+            sc  = data.get("score", 0)
             pct = sc * 10
-            with cols[i]:
+            with cols_j[i]:
                 st.markdown(f"""
                 <div class="dv-score-card">
-                  <div class="dv-score-val" style="color:{color}">{sc}<span style="font-size:0.9rem;color:var(--text3)">/10</span></div>
+                  <div class="dv-score-val" style="color:{color}">
+                    {sc}<span style="font-size:0.9rem;color:var(--text3)">/10</span>
+                  </div>
                   <div class="dv-score-lbl">{label}</div>
-                  <div class="dv-score-bar"><div class="dv-score-fill" style="width:{pct}%;background:{color}"></div></div>
-                  <div style="font-size:11px;color:var(--text3);margin-top:6px">{data.get("commentaire","")}</div>
+                  <div class="dv-score-bar">
+                    <div class="dv-score-fill"
+                         style="width:{pct}%;background:{color}">
+                    </div>
+                  </div>
+                  <div style="font-size:11px;color:var(--text3);margin-top:6px">
+                    {data.get("commentaire","")}
+                  </div>
                 </div>
                 """, unsafe_allow_html=True)
 
-# ── DONNEES ────────────────────────────────────────────────────────
-with tab_data:
-    st.markdown('<p class="dv-sec-title">Toutes les demandes</p>', unsafe_allow_html=True)
-    df = lire_demandes()
-    if df.empty:
-        st.info("Aucune demande.")
-    else:
-        if st.button("📥 Télécharger Excel"):
-            st.download_button(
-                label="⬇️ Télécharger demandes.xlsx",
-                data=open("demandes/demandes.xlsx","rb").read(),
-                file_name="demandes.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-        st.dataframe(df, use_container_width=True, height=500)
+# ── FOOTER ─────────────────────────────────────────────────────────
+st.markdown("---")
+if st.button("🚪 Retour à l'accueil"):
+    st.switch_page("app.py")
 ================================================================================
 pdf_generator.py
 # ==============================================================================
