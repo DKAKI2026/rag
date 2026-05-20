@@ -2217,7 +2217,10 @@ from backend.agents.agent_rag       import chatbot_assurance
 from backend.agents.agent_souscription import evaluer_demande_sync
 from backend.utils.demandes_excel   import lire_demandes_client
 from frontend.styles.client_css     import CLIENT_CSS
-from backend.config.settings        import COMPANY_NAME if hasattr(__import__('backend.config.settings', fromlist=['COMPANY_NAME']), 'COMPANY_NAME') else None
+from backend.utils.csv_handler         import verifier_login, get_vehicules_client, get_conducteurs_additionnels
+from backend.agents.orchestrateur      import orchestrer_evaluation, orchestrer_chatbot
+from backend.utils.demandes_excel      import lire_demandes_client
+from frontend.styles.client_css        import CLIENT_CSS
 
 COMPANY = "Desjardins Assurances"
 
