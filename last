@@ -1,0 +1,333 @@
+================================================================================
+CHANGEMENTS — APPROBATION FINALE DU CLIENT
+================================================================================
+
+LOGIQUE MÉTIER :
+  1. Employé approuve la demande  → statut = "APPROUVE"
+  2. Client voit la demande dans "Mes documents" → doit donner son approbation
+  3. Client confirme → statut = "APPROUVE_CLIENT"
+  4. Client peut alors télécharger le PDF final
+
+================================================================================
+CHANGEMENT 1 — backend/utils/demandes_excel.py
+Ajouter la fonction mettre_a_jour_approbation_client()
+================================================================================
+
+Ajoutez cette fonction à la fin du fichier :
+
+def mettre_a_jour_approbation_client(demande_id: str) -> bool:
+    """Met à jour le statut après approbation finale du client."""
+    try:
+        init_fichier()
+        df   = pd.read_excel(DEMANDES_FILE)
+        mask = df["demande_id"].astype(str) == str(demande_id)
+        if mask.sum() == 0:
+            return False
+        df.loc[mask, "statut"]              = "APPROUVE_CLIENT"
+        df.loc[mask, "date_approbation_client"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        df.to_excel(DEMANDES_FILE, index=False)
+        return True
+    except Exception as e:
+        print(f"Erreur approbation client : {e}")
+        return False
+
+================================================================================
+CHANGEMENT 2 — backend/utils/demandes_excel.py
+Ajouter la colonne date_approbation_client dans COLONNES
+================================================================================
+
+REMPLACER :
+    COLONNES = [
+        "demande_id", "applicant_id", "first_name", "last_name", "email", "phone",
+        "vehicle_make", "vehicle_model", "vehicle_year", "vehicle_vin", "vehicle_value",
+        "score_risque", "profil_conducteur",
+        "statut",
+        "triggers",
+        "raisons_refus",
+        "prime_annuelle", "prime_mensuelle",
+        "date_demande", "date_decision", "employe_decision", "commentaire_employe",
+    ]
+
+PAR :
+    COLONNES = [
+        "demande_id", "applicant_id", "first_name", "last_name", "email", "phone",
+        "vehicle_make", "vehicle_model", "vehicle_year", "vehicle_vin", "vehicle_value",
+        "score_risque", "profil_conducteur",
+        "statut",
+        "triggers",
+        "raisons_refus",
+        "prime_annuelle", "prime_mensuelle",
+        "date_demande", "date_decision", "employe_decision", "commentaire_employe",
+        "date_approbation_client",
+    ]
+
+================================================================================
+CHANGEMENT 3 — pages/1_Client.py
+Ajouter l'import de la nouvelle fonction
+================================================================================
+
+AJOUTER dans les imports en haut du fichier :
+
+    from backend.utils.demandes_excel import (
+        lire_demandes_client,
+        mettre_a_jour_approbation_client,
+    )
+
+================================================================================
+CHANGEMENT 4 — pages/1_Client.py
+Modifier la page "Mes documents" pour afficher le bouton d'approbation
+================================================================================
+
+Dans la section PAGE MES DOCUMENTS, REMPLACER la liste des demandes filtrées :
+
+    approuvees = [d for d in demandes if str(d.get("statut","")) == "APPROUVE"]
+
+PAR :
+    # Demandes approuvées par employé mais pas encore par le client
+    approuvees = [d for d in demandes if str(d.get("statut","")) == "APPROUVE"]
+    # Demandes entièrement finalisées
+    approuvees_client = [d for d in demandes if str(d.get("statut","")) == "APPROUVE_CLIENT"]
+
+================================================================================
+CHANGEMENT 5 — pages/1_Client.py
+Remplacer le bloc d'affichage des demandes approuvées dans "Mes documents"
+================================================================================
+
+REMPLACER tout le bloc "for d in reversed(approuvees):" PAR :
+
+    # ── Demandes en attente d'approbation client ──────────────────
+    if approuvees:
+        st.markdown(f"""
+        <div style="background:var(--amber-bg);border:1px solid var(--amber-bd);
+                    border-radius:var(--r-lg);padding:1rem 1.5rem;margin-bottom:1.5rem;
+                    font-size:13px;color:var(--amber)">
+          ⏳ <strong>{len(approuvees)} demande(s)</strong> approuvée(s) par votre conseiller
+          — en attente de votre confirmation finale.
+        </div>""", unsafe_allow_html=True)
+
+        for d in reversed(approuvees):
+            dem_id    = str(d.get("demande_id",""))
+            veh_label = (f"{d.get('vehicle_year','')} {d.get('vehicle_make','')} "
+                         f"{d.get('vehicle_model','')}")
+            prime     = d.get("prime_annuelle","N/A")
+            date_app  = str(d.get("date_decision","—"))
+            comm      = str(d.get("commentaire_employe","")).strip()
+            emp       = str(d.get("employe_decision","—"))
+
+            st.markdown(f"""
+            <div class="cl-card" style="border:1.5px solid var(--amber-bd)">
+              <div style="display:flex;align-items:center;
+                          justify-content:space-between;margin-bottom:12px">
+                <div>
+                  <div style="font-size:11px;color:var(--text3);font-family:monospace">
+                    {dem_id}
+                  </div>
+                  <div style="font-size:15px;font-weight:600;color:var(--text);margin:4px 0">
+                    🚗 {veh_label}
+                  </div>
+                  <div style="font-size:13px;color:var(--text2)">
+                    Prime : <strong>{prime}$/an</strong>
+                  </div>
+                </div>
+                <span class="cl-badge orange">⏳ En attente de votre confirmation</span>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;
+                          gap:6px;font-size:12px;color:var(--text3)">
+                <div>📅 Approuvé le : <strong style="color:var(--text2)">{date_app}</strong></div>
+                <div>👤 Conseiller : <strong style="color:var(--text2)">{emp}</strong></div>
+                {f'<div style="grid-column:1/-1">💬 {comm}</div>' if comm else ''}
+              </div>
+            </div>""", unsafe_allow_html=True)
+
+            # Bloc confirmation client
+            st.markdown(f"""
+            <div style="background:var(--accent-bg);border:1px solid var(--accent-bd);
+                        border-radius:var(--r-lg);padding:1.2rem 1.5rem;
+                        margin-bottom:0.5rem">
+              <div style="font-size:13.5px;font-weight:600;color:var(--accent);
+                          margin-bottom:8px">
+                ✍️ Votre confirmation est requise
+              </div>
+              <div style="font-size:12.5px;color:var(--text2);line-height:1.7;
+                          margin-bottom:12px">
+                En cliquant sur <strong>J'accepte et je confirme</strong>, vous acceptez
+                les conditions de votre police d'assurance automobile avec une prime de
+                <strong>{prime}$/an ({round(float(prime)/12, 2) if prime != 'N/A' else 'N/A'}$/mois)</strong>
+                pour votre véhicule <strong>{veh_label}</strong>.
+              </div>
+            </div>""", unsafe_allow_html=True)
+
+            confirm_key = f"confirm_{dem_id}"
+            col_oui, col_non = st.columns(2)
+            with col_oui:
+                if st.button(
+                    "✅ J'accepte et je confirme",
+                    key=f"accept_{dem_id}",
+                    use_container_width=True
+                ):
+                    if mettre_a_jour_approbation_client(dem_id):
+                        add_notif(
+                            f"✅ Demande {dem_id} confirmée ! Votre PDF est disponible.",
+                            "success"
+                        )
+                    else:
+                        add_notif("❌ Erreur lors de la confirmation", "error")
+                    st.rerun()
+            with col_non:
+                if st.button(
+                    "❌ Je refuse cette offre",
+                    key=f"refuse_{dem_id}",
+                    use_container_width=True
+                ):
+                    # Marquer comme refusé par le client
+                    from backend.utils.demandes_excel import mettre_a_jour_statut
+                    if mettre_a_jour_statut(dem_id, "REFUSE_CLIENT", "Client", "Refusé par le client"):
+                        add_notif(f"Demande {dem_id} refusée.", "warn")
+                    else:
+                        add_notif("❌ Erreur", "error")
+                    st.rerun()
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Demandes confirmées par le client — PDF disponible ────────
+    if approuvees_client:
+        st.markdown(f"""
+        <div style="background:var(--green-bg);border:1px solid var(--green-bd);
+                    border-radius:var(--r-lg);padding:1rem 1.5rem;margin-bottom:1.5rem;
+                    font-size:13px;color:var(--green)">
+          ✅ <strong>{len(approuvees_client)} police(s) active(s)</strong> —
+          Téléchargez vos confirmations PDF ci-dessous.
+        </div>""", unsafe_allow_html=True)
+
+        for d in reversed(approuvees_client):
+            dem_id    = str(d.get("demande_id",""))
+            veh_label = (f"{d.get('vehicle_year','')} {d.get('vehicle_make','')} "
+                         f"{d.get('vehicle_model','')}")
+            prime     = d.get("prime_annuelle","N/A")
+            date_app  = str(d.get("date_approbation_client","—"))
+
+            st.markdown(f"""
+            <div class="cl-card" style="border:1.5px solid var(--green-bd)">
+              <div style="display:flex;align-items:center;
+                          justify-content:space-between;margin-bottom:12px">
+                <div>
+                  <div style="font-size:11px;color:var(--text3);font-family:monospace">
+                    {dem_id}
+                  </div>
+                  <div style="font-size:15px;font-weight:600;color:var(--text);margin:4px 0">
+                    🚗 {veh_label}
+                  </div>
+                  <div style="font-size:13px;color:var(--text2)">
+                    Prime : <strong>{prime}$/an</strong>
+                  </div>
+                </div>
+                <span class="cl-badge vert">✅ Police active</span>
+              </div>
+              <div style="font-size:12px;color:var(--text3)">
+                📅 Confirmé le : <strong style="color:var(--text2)">{date_app}</strong>
+              </div>
+            </div>""", unsafe_allow_html=True)
+
+            col_btn, col_info = st.columns([1, 3])
+            with col_btn:
+                try:
+                    pdf_bytes = generer_pdf_demande(dict(d))
+                    st.download_button(
+                        label              = "📄 Télécharger PDF",
+                        data               = pdf_bytes,
+                        file_name          = f"police_{dem_id}.pdf",
+                        mime               = "application/pdf",
+                        use_container_width= True,
+                        key                = f"pdf_{dem_id}",
+                    )
+                except Exception as e:
+                    st.error(f"Erreur PDF : {str(e)}")
+            with col_info:
+                st.markdown(
+                    '<div style="font-size:12px;color:var(--text3);padding-top:8px">'
+                    'Confirmation officielle · Police active · Document généré à la demande'
+                    '</div>',
+                    unsafe_allow_html=True
+                )
+            st.markdown("<br>", unsafe_allow_html=True)
+
+================================================================================
+CHANGEMENT 6 — pages/1_Client.py
+Mettre à jour la page "Mes demandes" pour afficher le nouveau statut
+================================================================================
+
+Dans la section PAGE MES DEMANDES, REMPLACER :
+
+    statut_map = {
+        "APPROUVE"            : ("vert",   "✅ Approuvé"),
+        "VERIFICATION_HUMAINE": ("orange", "⏳ En attente"),
+        "REFUSE"              : ("rouge",  "❌ Refusé"),
+    }
+
+PAR :
+
+    statut_map = {
+        "APPROUVE"            : ("orange", "⏳ En attente de votre confirmation"),
+        "APPROUVE_CLIENT"     : ("vert",   "✅ Police active"),
+        "VERIFICATION_HUMAINE": ("orange", "⏳ En traitement"),
+        "REFUSE"              : ("rouge",  "❌ Refusé"),
+        "REFUSE_CLIENT"       : ("rouge",  "❌ Refusé par le client"),
+    }
+
+================================================================================
+CHANGEMENT 7 — pages/2_Employe.py
+Mettre à jour l'affichage des statuts côté employé
+================================================================================
+
+Dans render_demande_card(), REMPLACER :
+
+    color_map = {"APPROUVE":"vert","VERIFICATION_HUMAINE":"orange","REFUSE":"rouge"}
+    label_map = {"APPROUVE":"✅ Approuvé","VERIFICATION_HUMAINE":"⏳ En attente","REFUSE":"❌ Refusé"}
+
+PAR :
+
+    color_map = {
+        "APPROUVE"            : "orange",
+        "APPROUVE_CLIENT"     : "vert",
+        "VERIFICATION_HUMAINE": "orange",
+        "REFUSE"              : "rouge",
+        "REFUSE_CLIENT"       : "rouge",
+    }
+    label_map = {
+        "APPROUVE"            : "⏳ Att. confirmation client",
+        "APPROUVE_CLIENT"     : "✅ Police active",
+        "VERIFICATION_HUMAINE": "⏳ En attente",
+        "REFUSE"              : "❌ Refusé",
+        "REFUSE_CLIENT"       : "❌ Refusé par client",
+    }
+
+================================================================================
+RÉSUMÉ DU FLUX COMPLET
+================================================================================
+
+  CLIENT soumet demande
+        │
+        ▼
+  EMPLOYÉ analyse et approuve → statut = "APPROUVE"
+        │
+        ▼
+  CLIENT reçoit notification dans "Mes documents"
+        │
+        ├── Client clique "J'accepte" → statut = "APPROUVE_CLIENT"
+        │         └── PDF téléchargeable
+        │
+        └── Client clique "Je refuse" → statut = "REFUSE_CLIENT"
+
+================================================================================
+NOUVEAUX STATUTS DANS LE SYSTÈME
+================================================================================
+
+  VERIFICATION_HUMAINE  → En traitement par l'employé
+  APPROUVE              → Approuvé par l'employé, en attente client
+  APPROUVE_CLIENT       → Police active (confirmée par le client)
+  REFUSE                → Refusé automatiquement ou par l'employé
+  REFUSE_CLIENT         → Refusé par le client
+
+================================================================================
+FIN DES CHANGEMENTS
+================================================================================
