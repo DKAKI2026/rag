@@ -1,0 +1,208 @@
+================================================================================
+RÃ‰SUMÃ‰ DES AGENTS â€” PROJET ASSURANCE AUTO DESJARDINS
+Cadys Operators â€” 2026
+================================================================================
+
+Le projet utilise 3 agents spÃ©cialisÃ©s coordonnÃ©s par un orchestrateur central.
+
+================================================================================
+AGENT 1 â€” Agent RAG
+Fichier : backend/agents/agent_rag.py
+================================================================================
+
+RÃ”LE :
+RÃ©pond aux questions des clients sur les rÃ¨gles d'assurance automobile.
+
+FONCTIONNEMENT :
+  1. ReÃ§oit la question du client
+  2. GÃ©nÃ¨re un embedding vectoriel de la question (Azure OpenAI)
+  3. Recherche les chunks pertinents dans Azure AI Search (Top 5)
+  4. Construit un contexte Ã  partir des PDFs retrouvÃ©s
+  5. Appelle GPT-4 avec le contexte + la question
+  6. Retourne une rÃ©ponse en franÃ§ais basÃ©e UNIQUEMENT sur les documents
+
+PARAMÃˆTRES :
+  - ModÃ¨le       : GPT-4 (Azure OpenAI)
+  - Temperature  : 0.3 (rÃ©ponses cohÃ©rentes)
+  - Max tokens   : 600
+  - Historique   : 4 derniers messages conservÃ©s
+
+FONCTIONS EXPOSÃ‰ES :
+  - agent_chatbot_assurance()  â†’ async
+  - chatbot_assurance()        â†’ sync (wrapper pour Streamlit)
+
+APPELÃ‰ DEPUIS :
+  - orchestrateur.orchestrer_chatbot()
+  - pages/1_Client.py (chatbot)
+
+================================================================================
+AGENT 2 â€” Agent Souscription
+Fichier : backend/agents/agent_souscription.py
+================================================================================
+
+RÃ”LE :
+GÃ©nÃ¨re des explications textuelles pour le client et des analyses
+dÃ©taillÃ©es pour l'employÃ© aprÃ¨s l'Ã©valuation d'une demande.
+
+FONCTIONNEMENT :
+
+  Mode Client :
+  1. ReÃ§oit le statut, score, triggers et prime estimÃ©e
+  2. Appelle GPT-4 pour gÃ©nÃ©rer un message personnalisÃ© selon le statut :
+     - REFUSE           â†’ explication compassionnelle
+     - VERIFICATION_HUMAINE â†’ information sur le dÃ©lai (1-3 jours)
+     - APPROUVE         â†’ fÃ©licitations + dÃ©tails de la prime
+
+  Mode EmployÃ© :
+  1. ReÃ§oit le dossier complet (profil, VMR, triggers, prime)
+  2. Appelle GPT-4 pour gÃ©nÃ©rer :
+     - Analyse du risque (2-3 phrases)
+     - Points d'attention (VMR, triggers, profil)
+     - Recommandation : APPROUVER / REFUSER + justification
+
+PARAMÃˆTRES :
+  - ModÃ¨le       : GPT-4 (Azure OpenAI)
+  - Temperature  : 0.4 (client) / 0.3 (employÃ©)
+  - Max tokens   : 300 (client) / 400 (employÃ©)
+
+FONCTIONS EXPOSÃ‰ES :
+  - agent_evaluer_demande()         â†’ async (legacy)
+  - agent_analyse_employe()         â†’ async
+  - evaluer_demande_sync()          â†’ sync (legacy)
+  - analyser_demande_employe_sync() â†’ sync
+
+APPELÃ‰ DEPUIS :
+  - orchestrateur.orchestrer_evaluation()
+  - orchestrateur.orchestrer_analyse_employe()
+  - pages/2_Employe.py (analyse IA)
+
+================================================================================
+AGENT 3 â€” Agent Tarification VMR
+Fichier : backend/agents/agent_tarification.py
+================================================================================
+
+RÃ”LE :
+DÃ©termine le groupe VMR du vÃ©hicule et calcule la prime estimÃ©e
+en se basant UNIQUEMENT sur les rÃ¨gles des PDFs indexÃ©s.
+Aucune formule codÃ©e en dur â€” tout passe par RAG + GPT.
+
+FONCTIONNEMENT EN 2 Ã‰TAPES :
+
+  Ã‰tape A â€” DÃ©termination du groupe VMR :
+  1. RequÃªte RAG ciblÃ©e sur vmr_vehicle_rating_fr (Top 6 chunks)
+  2. GPT-4 dÃ©termine le groupe (1-99) selon l'Ã©chelle des PDFs :
+     - TrouvÃ© dans table VMR  â†’ groupe prÃ©cis (1-50)
+     - Absent de la table     â†’ groupe 99 + rÃ©fÃ©rence souscription
+     - VMR indisponible       â†’ table de repli selon valeur du vÃ©hicule
+
+  Ã‰tape B â€” Calcul de la prime :
+  1. RequÃªte RAG sur rÃ¨gles de tarification (Top 6 chunks)
+  2. GPT-4 calcule la prime selon les rÃ¨gles des PDFs :
+     - Base selon groupe VMR
+     - Ajustements profil conducteur (1/2/3)
+     - Ajustements score de risque
+     - Application des rabais (pneus hiver, antivol, membre, etc.)
+  3. Retourne prime annuelle + mensuelle + fourchette + composantes dÃ©taillÃ©es
+
+RÃ‰SULTAT RETOURNÃ‰ :
+  - groupe_vmr          : int (1-99)
+  - source_vmr          : "vmr_table | valeur_repli | groupe_99_reference"
+  - justification_vmr   : str
+  - prime_annuelle      : float
+  - prime_mensuelle     : float
+  - fourchette_basse    : float
+  - fourchette_haute    : float
+  - composantes         : list (base + majorations + rabais)
+  - note_client         : str
+  - necessite_souscription_specialisee : bool
+
+PARAMÃˆTRES :
+  - ModÃ¨le       : GPT-4 (Azure OpenAI)
+  - Temperature  : 0.1 (prÃ©cision maximale pour les calculs)
+  - Max tokens   : 400 (VMR) / 600 (prime)
+
+FONCTIONS EXPOSÃ‰ES :
+  - agent_tarification_vmr() â†’ async
+  - tarification_vmr_sync()  â†’ sync (wrapper pour Streamlit)
+
+APPELÃ‰ DEPUIS :
+  - orchestrateur.orchestrer_evaluation() (Ã©tape 3 du pipeline)
+
+================================================================================
+ORCHESTRATEUR â€” Coordinateur central
+Fichier : backend/agents/orchestrateur.py
+================================================================================
+
+RÃ”LE :
+Point d'entrÃ©e unique qui coordonne les 3 agents dans un pipeline
+sÃ©quentiel de 5 Ã©tapes. GÃ¨re les erreurs et retourne un rÃ©sultat enrichi.
+
+PIPELINE D'Ã‰VALUATION (5 Ã©tapes) :
+
+  Ã‰TAPE 1 â€” RÃ©cupÃ©ration donnÃ©es
+    - Conducteurs additionnels (csv_handler)
+    - Validation permis (csv_handler)
+    - DurÃ©e typique : < 100 ms
+
+  Ã‰TAPE 2 â€” RÃ¨gles mÃ©tier (decisions.py)
+    - VÃ©rification VIN blacklist
+    - Refus directs conducteur / vÃ©hicule
+    - Calcul score de risque
+    - DÃ©tection triggers vÃ©rification humaine
+    - DurÃ©e typique : < 50 ms
+
+  Ã‰TAPE 3 â€” Tarification VMR (Agent Tarification)
+    - SKIPPÃ‰E si statut = REFUSE
+    - RAG + GPT groupe VMR + calcul prime
+    - DurÃ©e typique : 8 Ã  15 secondes
+
+  Ã‰TAPE 4 â€” Explication client (GPT direct)
+    - Message personnalisÃ© selon statut
+    - DurÃ©e typique : 3 Ã  5 secondes
+
+  Ã‰TAPE 5 â€” Sauvegarde Excel (demandes_excel)
+    - CrÃ©ation entrÃ©e dans demandes.xlsx
+    - DurÃ©e typique : < 200 ms
+
+  DURÃ‰E TOTALE PIPELINE : 12 Ã  20 secondes
+
+FONCTIONS EXPOSÃ‰ES :
+  - orchestrer_evaluation()       â†’ appelÃ© depuis pages/1_Client.py
+  - orchestrer_analyse_employe()  â†’ appelÃ© depuis pages/2_Employe.py
+  - orchestrer_chatbot()          â†’ appelÃ© depuis pages/1_Client.py
+
+================================================================================
+SCHÃ‰MA DES INTERACTIONS
+================================================================================
+
+pages/1_Client.py
+    â”‚
+    â”œâ”€â”€ orchestrer_evaluation()
+    â”‚       â”œâ”€â”€ csv_handler          (donnÃ©es conducteurs + permis)
+    â”‚       â”œâ”€â”€ decisions.py         (rÃ¨gles mÃ©tier + score)
+    â”‚       â”œâ”€â”€ AGENT TARIFICATION   (groupe VMR + prime)
+    â”‚       â”‚       â””â”€â”€ Azure AI Search + GPT-4
+    â”‚       â”œâ”€â”€ GPT-4                (explication client)
+    â”‚       â””â”€â”€ demandes_excel       (sauvegarde)
+    â”‚
+    â””â”€â”€ orchestrer_chatbot()
+            â””â”€â”€ AGENT RAG
+                    â””â”€â”€ Azure AI Search + GPT-4
+
+pages/2_Employe.py
+    â””â”€â”€ orchestrer_analyse_employe()
+            â””â”€â”€ AGENT SOUSCRIPTION
+                    â””â”€â”€ GPT-4
+
+================================================================================
+TECHNOLOGIES AZURE UTILISÃ‰ES PAR LES AGENTS
+================================================================================
+
+  Azure OpenAI GPT-4    â†’ GÃ©nÃ©ration de texte (tous les agents)
+  Azure OpenAI Embeddings â†’ Vectorisation des requÃªtes (Agent RAG + Tarification)
+  Azure AI Search       â†’ Recherche vectorielle dans les PDFs indexÃ©s
+  Azure Identity        â†’ Authentification sÃ©curisÃ©e (DefaultAzureCredential)
+
+================================================================================
+FIN DU DOCUMENT
+================================================================================
