@@ -2211,6 +2211,7 @@ FICHIER 17 : pages/1_Client.py  [⚠️ VOIR NOTE CI-DESSOUS — passer à orche
 import streamlit as st
 import time
 from datetime import datetime
+from backend.utils.pdf_generator import generer_pdf_demande
 
 from backend.utils.csv_handler      import verifier_login, get_vehicules_client, get_conducteurs_additionnels
 from backend.agents.agent_rag       import chatbot_assurance
@@ -3122,8 +3123,392 @@ with tab_data:
             )
         st.dataframe(df, use_container_width=True, height=500)
 ================================================================================
+pdf_generator.py
+# ==============================================================================
+# FICHIER : backend/utils/pdf_generator.py
+# ROLE    : Génération du PDF résumé de demande d'assurance pour le client
+# USAGE   : from backend.utils.pdf_generator import generer_pdf_demande
+# ==============================================================================
 
-FICHIERS __init__.py — CREER CES FICHIERS VIDES
+import io
+from datetime import datetime
+from reportlab.lib.pagesizes import letter
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.platypus import (
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+    HRFlowable
+)
+from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+
+
+# ==============================================================================
+# COULEURS DESJARDINS
+# ==============================================================================
+BLEU_DESJ   = colors.HexColor("#1e40af")
+BLEU_LIGHT  = colors.HexColor("#eff6ff")
+VERT        = colors.HexColor("#15803d")
+VERT_LIGHT  = colors.HexColor("#f0fdf4")
+ROUGE       = colors.HexColor("#b91c1c")
+ROUGE_LIGHT = colors.HexColor("#fef2f2")
+AMBER       = colors.HexColor("#b45309")
+AMBER_LIGHT = colors.HexColor("#fffbeb")
+GRIS_CLAIR  = colors.HexColor("#f1f5f9")
+GRIS_BORD   = colors.HexColor("#e2e8f0")
+TEXTE       = colors.HexColor("#0f172a")
+TEXTE2      = colors.HexColor("#475569")
+
+
+# ==============================================================================
+# STYLES
+# ==============================================================================
+def _build_styles():
+    styles = getSampleStyleSheet()
+
+    styles.add(ParagraphStyle(
+        name="TitreDoc",
+        fontSize=22, fontName="Helvetica-Bold",
+        textColor=colors.white, alignment=TA_CENTER,
+        spaceAfter=4,
+    ))
+    styles.add(ParagraphStyle(
+        name="SousTitreDoc",
+        fontSize=11, fontName="Helvetica",
+        textColor=colors.HexColor("#bfdbfe"), alignment=TA_CENTER,
+        spaceAfter=0,
+    ))
+    styles.add(ParagraphStyle(
+        name="SectionTitle",
+        fontSize=11, fontName="Helvetica-Bold",
+        textColor=BLEU_DESJ, spaceBefore=14, spaceAfter=6,
+    ))
+    styles.add(ParagraphStyle(
+        name="Label",
+        fontSize=9, fontName="Helvetica-Bold",
+        textColor=TEXTE2,
+    ))
+    styles.add(ParagraphStyle(
+        name="Valeur",
+        fontSize=9, fontName="Helvetica",
+        textColor=TEXTE,
+    ))
+    styles.add(ParagraphStyle(
+        name="Explication",
+        fontSize=9.5, fontName="Helvetica",
+        textColor=TEXTE, leading=14, spaceAfter=4,
+    ))
+    styles.add(ParagraphStyle(
+        name="Footer",
+        fontSize=7.5, fontName="Helvetica",
+        textColor=TEXTE2, alignment=TA_CENTER,
+    ))
+    styles.add(ParagraphStyle(
+        name="StatutTexte",
+        fontSize=13, fontName="Helvetica-Bold",
+        textColor=colors.white, alignment=TA_CENTER,
+    ))
+    styles.add(ParagraphStyle(
+        name="PrimeVal",
+        fontSize=26, fontName="Helvetica-Bold",
+        textColor=colors.white, alignment=TA_CENTER,
+    ))
+    styles.add(ParagraphStyle(
+        name="PrimeSub",
+        fontSize=10, fontName="Helvetica",
+        textColor=colors.HexColor("#bfdbfe"), alignment=TA_CENTER,
+    ))
+
+    return styles
+
+
+# ==============================================================================
+# FONCTION PRINCIPALE
+# ==============================================================================
+def generer_pdf_demande(
+    client      : dict,
+    vehicule    : dict,
+    result      : dict,
+) -> bytes:
+    """
+    Génère un PDF résumé de la demande d'assurance.
+
+    Paramètres :
+      client   : dict du conducteur (depuis session_state.client)
+      vehicule : dict du véhicule sélectionné
+      result   : dict retourné par orchestrer_evaluation()
+
+    Retourne : bytes du PDF (à passer à st.download_button)
+    """
+    buffer = io.BytesIO()
+    doc    = SimpleDocTemplate(
+        buffer,
+        pagesize=letter,
+        leftMargin=0.7*inch, rightMargin=0.7*inch,
+        topMargin=0.5*inch,  bottomMargin=0.6*inch,
+    )
+
+    styles  = _build_styles()
+    story   = []
+    W       = 7.1 * inch  # largeur utile
+
+    statut      = result.get("statut", "")
+    score       = result.get("score", 0)
+    evaluation  = result.get("evaluation", {})
+    tarif       = result.get("tarification") or {}
+    est         = evaluation.get("estimation") or {}
+    explication = result.get("explication_client", "")
+    demande_id  = result.get("demande_id", "")
+
+    prime_ann  = tarif.get("prime_annuelle")  or est.get("prime_annuelle")
+    prime_mois = tarif.get("prime_mensuelle") or est.get("prime_mensuelle")
+    groupe_vmr = tarif.get("groupe_vmr")
+    fourch_bas = tarif.get("fourchette_basse")
+    fourch_hau = tarif.get("fourchette_haute")
+
+    # Couleurs selon statut
+    statut_config = {
+        "APPROUVE"            : (VERT,  VERT_LIGHT,  "✓  DEMANDE APPROUVÉE"),
+        "VERIFICATION_HUMAINE": (AMBER, AMBER_LIGHT, "⏳  EN COURS DE TRAITEMENT"),
+        "REFUSE"              : (ROUGE, ROUGE_LIGHT, "✗  DEMANDE REFUSÉE"),
+    }
+    couleur_principale, couleur_bg, statut_label = statut_config.get(
+        statut, (BLEU_DESJ, BLEU_LIGHT, statut)
+    )
+
+    # ── ENTÊTE ──────────────────────────────────────────────────────
+    entete_data = [[
+        Paragraph("🚗  Desjardins Assurances", styles["TitreDoc"]),
+    ]]
+    entete_table = Table(entete_data, colWidths=[W])
+    entete_table.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,-1), BLEU_DESJ),
+        ("ROUNDEDCORNERS", [8]),
+        ("TOPPADDING",    (0,0), (-1,-1), 18),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 10),
+        ("LEFTPADDING",   (0,0), (-1,-1), 20),
+        ("RIGHTPADDING",  (0,0), (-1,-1), 20),
+    ]))
+    story.append(entete_table)
+
+    sous_titre_data = [[
+        Paragraph("Résumé de votre demande d'assurance automobile", styles["SousTitreDoc"]),
+    ]]
+    sous_titre_table = Table(sous_titre_data, colWidths=[W])
+    sous_titre_table.setStyle(TableStyle([
+        ("BACKGROUND",    (0,0), (-1,-1), BLEU_DESJ),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 16),
+        ("TOPPADDING",    (0,0), (-1,-1), 0),
+        ("LEFTPADDING",   (0,0), (-1,-1), 20),
+        ("RIGHTPADDING",  (0,0), (-1,-1), 20),
+    ]))
+    story.append(sous_titre_table)
+    story.append(Spacer(1, 12))
+
+    # ── STATUT ──────────────────────────────────────────────────────
+    statut_data = [[Paragraph(statut_label, styles["StatutTexte"])]]
+    statut_table = Table(statut_data, colWidths=[W])
+    statut_table.setStyle(TableStyle([
+        ("BACKGROUND",    (0,0), (-1,-1), couleur_principale),
+        ("ROUNDEDCORNERS", [6]),
+        ("TOPPADDING",    (0,0), (-1,-1), 12),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 12),
+    ]))
+    story.append(statut_table)
+    story.append(Spacer(1, 10))
+
+    # ── PRIME (si non refus) ────────────────────────────────────────
+    if statut != "REFUSE" and prime_ann:
+        fourch_str = ""
+        if fourch_bas and fourch_hau:
+            fourch_str = f"Fourchette : {fourch_bas:,.0f} $ – {fourch_hau:,.0f} $"
+        vmr_str = f"Groupe VMR {groupe_vmr}" if groupe_vmr else ""
+        sub_str  = f"{prime_mois:,.2f} $ / mois" if prime_mois else ""
+        if vmr_str and sub_str:
+            sub_str += f"  ·  {vmr_str}"
+
+        prime_data = [
+            [Paragraph("Prime annuelle estimée", styles["PrimeSub"])],
+            [Paragraph(f"{prime_ann:,.2f} $", styles["PrimeVal"])],
+            [Paragraph(sub_str, styles["PrimeSub"])],
+        ]
+        if fourch_str:
+            prime_data.append([Paragraph(fourch_str, styles["PrimeSub"])])
+
+        prime_table = Table(prime_data, colWidths=[W])
+        prime_table.setStyle(TableStyle([
+            ("BACKGROUND",    (0,0), (-1,-1), BLEU_DESJ),
+            ("ROUNDEDCORNERS", [8]),
+            ("TOPPADDING",    (0,0), (0,0),  10),
+            ("BOTTOMPADDING", (0,-1),(-1,-1), 12),
+            ("TOPPADDING",    (0,1), (-1,-1), 2),
+            ("BOTTOMPADDING", (0,0), (-1,-2), 2),
+        ]))
+        story.append(prime_table)
+        story.append(Spacer(1, 12))
+
+    # ── INFOS DEMANDE ───────────────────────────────────────────────
+    story.append(Paragraph("Informations de la demande", styles["SectionTitle"]))
+    story.append(HRFlowable(width=W, thickness=1, color=GRIS_BORD))
+    story.append(Spacer(1, 6))
+
+    info_rows = [
+        ["Numéro de demande", demande_id or "—"],
+        ["Date de soumission", datetime.now().strftime("%d %B %Y à %H:%M")],
+        ["Score de risque",    f"{score} / 12"],
+        ["Profil conducteur",  f"Profil {result.get('profil', '—')}"],
+    ]
+    if groupe_vmr:
+        info_rows.append(["Groupe VMR", f"{groupe_vmr} / 99  ({tarif.get('source_vmr','')})"])
+
+    info_table = Table(
+        [[Paragraph(r[0], styles["Label"]), Paragraph(r[1], styles["Valeur"])]
+         for r in info_rows],
+        colWidths=[2.5*inch, 4.6*inch],
+    )
+    info_table.setStyle(TableStyle([
+        ("BACKGROUND",    (0,0), (-1,-1), GRIS_CLAIR),
+        ("ROWBACKGROUNDS",(0,0), (-1,-1), [colors.white, GRIS_CLAIR]),
+        ("TOPPADDING",    (0,0), (-1,-1), 6),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 6),
+        ("LEFTPADDING",   (0,0), (-1,-1), 10),
+        ("RIGHTPADDING",  (0,0), (-1,-1), 10),
+        ("GRID",          (0,0), (-1,-1), 0.5, GRIS_BORD),
+        ("ROUNDEDCORNERS", [4]),
+    ]))
+    story.append(info_table)
+
+    # ── INFOS CLIENT ────────────────────────────────────────────────
+    story.append(Spacer(1, 10))
+    story.append(Paragraph("Conducteur principal", styles["SectionTitle"]))
+    story.append(HRFlowable(width=W, thickness=1, color=GRIS_BORD))
+    story.append(Spacer(1, 6))
+
+    client_rows = [
+        ["Nom complet",      f"{client.get('first_name','')} {client.get('last_name','')}"],
+        ["Numéro de client", str(client.get("applicant_id","—"))],
+        ["Courriel",         client.get("email","—")],
+        ["Téléphone",        client.get("phone","—")],
+        ["Ville / Province", f"{client.get('city','—')}, {client.get('province','—')}"],
+        ["Classe de permis", str(client.get("licence_class","—"))],
+        ["Années de permis", f"{client.get('years_licenced','—')} ans"],
+    ]
+    client_table = Table(
+        [[Paragraph(r[0], styles["Label"]), Paragraph(r[1], styles["Valeur"])]
+         for r in client_rows],
+        colWidths=[2.5*inch, 4.6*inch],
+    )
+    client_table.setStyle(TableStyle([
+        ("ROWBACKGROUNDS",(0,0), (-1,-1), [colors.white, GRIS_CLAIR]),
+        ("TOPPADDING",    (0,0), (-1,-1), 6),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 6),
+        ("LEFTPADDING",   (0,0), (-1,-1), 10),
+        ("RIGHTPADDING",  (0,0), (-1,-1), 10),
+        ("GRID",          (0,0), (-1,-1), 0.5, GRIS_BORD),
+    ]))
+    story.append(client_table)
+
+    # ── INFOS VEHICULE ───────────────────────────────────────────────
+    story.append(Spacer(1, 10))
+    story.append(Paragraph("Véhicule assuré", styles["SectionTitle"]))
+    story.append(HRFlowable(width=W, thickness=1, color=GRIS_BORD))
+    story.append(Spacer(1, 6))
+
+    veh_rows = [
+        ["Véhicule",        f"{vehicule.get('year','')} {vehicule.get('make','')} {vehicule.get('model','')}"],
+        ["VIN",             vehicule.get("vin","—")],
+        ["Valeur",          f"{float(vehicule.get('vehicle_value',0) or 0):,.0f} $"],
+        ["Usage",           vehicule.get("usage_type","—")],
+        ["KM annuels",      f"{vehicule.get('annual_km','—')} km"],
+        ["Pneus hiver",     "Oui" if str(vehicule.get("has_winter_tires","")).lower() in ["true","1","yes"] else "Non"],
+        ["Antivol",         "Oui" if str(vehicule.get("has_anti_theft","")).lower()   in ["true","1","yes"] else "Non"],
+    ]
+    veh_table = Table(
+        [[Paragraph(r[0], styles["Label"]), Paragraph(r[1], styles["Valeur"])]
+         for r in veh_rows],
+        colWidths=[2.5*inch, 4.6*inch],
+    )
+    veh_table.setStyle(TableStyle([
+        ("ROWBACKGROUNDS",(0,0), (-1,-1), [colors.white, GRIS_CLAIR]),
+        ("TOPPADDING",    (0,0), (-1,-1), 6),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 6),
+        ("LEFTPADDING",   (0,0), (-1,-1), 10),
+        ("RIGHTPADDING",  (0,0), (-1,-1), 10),
+        ("GRID",          (0,0), (-1,-1), 0.5, GRIS_BORD),
+    ]))
+    story.append(veh_table)
+
+    # ── DÉTAIL TARIFICATION ─────────────────────────────────────────
+    composantes = tarif.get("composantes", [])
+    if composantes:
+        story.append(Spacer(1, 10))
+        story.append(Paragraph("Détail de la tarification VMR", styles["SectionTitle"]))
+        story.append(HRFlowable(width=W, thickness=1, color=GRIS_BORD))
+        story.append(Spacer(1, 6))
+
+        comp_rows = [["Composante", "Montant", "Type"]]
+        for comp in composantes:
+            signe = "+" if comp["type"] == "majoration" else ("-" if comp["type"] == "rabais" else "")
+            comp_rows.append([
+                comp.get("label",""),
+                f"{signe}{comp.get('montant',0):,.2f} $",
+                comp.get("type","").capitalize(),
+            ])
+
+        comp_table = Table(
+            comp_rows,
+            colWidths=[4.0*inch, 1.8*inch, 1.3*inch],
+        )
+        comp_table.setStyle(TableStyle([
+            ("BACKGROUND",    (0,0), (-1,0),  BLEU_DESJ),
+            ("TEXTCOLOR",     (0,0), (-1,0),  colors.white),
+            ("FONTNAME",      (0,0), (-1,0),  "Helvetica-Bold"),
+            ("FONTSIZE",      (0,0), (-1,-1), 8.5),
+            ("ROWBACKGROUNDS",(0,1), (-1,-1), [colors.white, GRIS_CLAIR]),
+            ("TOPPADDING",    (0,0), (-1,-1), 6),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 6),
+            ("LEFTPADDING",   (0,0), (-1,-1), 10),
+            ("RIGHTPADDING",  (0,0), (-1,-1), 10),
+            ("GRID",          (0,0), (-1,-1), 0.5, GRIS_BORD),
+        ]))
+        story.append(comp_table)
+
+    # ── EXPLICATION CLIENT ───────────────────────────────────────────
+    if explication:
+        story.append(Spacer(1, 10))
+        story.append(Paragraph("Message de votre conseiller", styles["SectionTitle"]))
+        story.append(HRFlowable(width=W, thickness=1, color=GRIS_BORD))
+        story.append(Spacer(1, 6))
+
+        expl_data = [[Paragraph(explication, styles["Explication"])]]
+        expl_table = Table(expl_data, colWidths=[W])
+        expl_table.setStyle(TableStyle([
+            ("BACKGROUND",    (0,0), (-1,-1), BLEU_LIGHT),
+            ("LEFTPADDING",   (0,0), (-1,-1), 14),
+            ("RIGHTPADDING",  (0,0), (-1,-1), 14),
+            ("TOPPADDING",    (0,0), (-1,-1), 10),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 10),
+            ("ROUNDEDCORNERS", [6]),
+            ("BOX",           (0,0), (-1,-1), 1, BLEU_DESJ),
+        ]))
+        story.append(expl_table)
+
+    # ── FOOTER ──────────────────────────────────────────────────────
+    story.append(Spacer(1, 16))
+    story.append(HRFlowable(width=W, thickness=0.5, color=GRIS_BORD))
+    story.append(Spacer(1, 6))
+    story.append(Paragraph(
+        f"Document généré le {datetime.now().strftime('%d/%m/%Y à %H:%M')}  ·  "
+        f"Desjardins Assurances  ·  Ce document est fourni à titre indicatif uniquement.",
+        styles["Footer"]
+    ))
+
+    # ── BUILD ────────────────────────────────────────────────────────
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.read()
+
+
 ================================================================================
 
 Creez ces fichiers vides (contenu vide) :
