@@ -1,18 +1,1033 @@
 ================================================================================
-NOUVEAUX FICHIERS — AGENTS + ORCHESTRATEUR
-Projet : Assurance Auto Desjardins
+PROJET ASSURANCE AUTO DESJARDINS — VERSION COMPLÈTE V2
+Inclut : tous les fichiers originaux + agent_tarification + orchestrateur
+Fichiers modifiés  : agent_souscription.py, pages/1_Client.py, pages/2_Employe.py
+Fichiers nouveaux  : agent_tarification.py, orchestrateur.py
 ================================================================================
-Structure ajoutée :
 
-backend/agents/
-├── agent_rag.py              ← INCHANGÉ
-├── agent_souscription.py     ← REMPLACÉ (version ci-dessous)
-├── agent_tarification.py     ← NOUVEAU
-└── orchestrateur.py          ← NOUVEAU
+Structure du projet (mise à jour) :
+
+assurance_auto/
+├── app.py
+├── .env
+├── requirements.txt
+├── data/ (csv + pdfs/)
+├── demandes/
+├── backend/
+│   ├── config/settings.py
+│   ├── rules/ (scoring.py, blacklist.py, decisions.py)
+│   ├── agents/
+│   │   ├── agent_rag.py               ← INCHANGÉ
+│   │   ├── agent_souscription.py      ← MIS À JOUR
+│   │   ├── agent_tarification.py      ← NOUVEAU
+│   │   └── orchestrateur.py           ← NOUVEAU
+│   ├── utils/ (csv_handler.py, demandes_excel.py)
+│   └── indexer.py
+├── frontend/styles/ (client_css.py, employe_dev_css.py)
+└── pages/ (1_Client.py, 2_Employe.py, 3_Developpeur.py)
+
+Lancement : streamlit run app.py
+
+FICHIER 1 : app.py
+================================================================================
+import streamlit as st
+st.set_page_config(page_title="Desjardins Assurances", page_icon="🚗", layout="wide")
+st.switch_page("pages/1_Client.py")
 
 ================================================================================
-FICHIER 1 : backend/agents/agent_tarification.py  [NOUVEAU]
+FICHIER 2 : .env
 ================================================================================
+AZURE_OPENAI_ENDPOINT=https://TON-NOM.openai.azure.com/
+AZURE_OPENAI_DEPLOYMENT=gpt-4-5
+AZURE_API_VERSION=2024-12-01-preview
+EMBEDDING_MODEL=text-embedding-ada-002
+AZURE_SEARCH_ENDPOINT=https://srch-team13.search.windows.net
+
+================================================================================
+FICHIER 3 : requirements.txt
+================================================================================
+streamlit
+openai>=1.30.0
+azure-identity
+azure-search-documents
+pypdf
+python-dotenv
+pandas
+openpyxl
+done_header
+================================================================================
+FICHIER 4 : backend/config/settings.py
+================================================================================
+# ==============================================================================
+# FICHIER : backend/config/settings.py
+# ROLE    : Configuration centrale du projet assurance auto
+# ==============================================================================
+
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
+# ── Azure OpenAI ───────────────────────────────────────────────────
+AZURE_OPENAI_ENDPOINT   = os.getenv("AZURE_OPENAI_ENDPOINT")
+AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4-5")
+AZURE_API_VERSION       = os.getenv("AZURE_API_VERSION", "2024-12-01-preview")
+EMBEDDING_MODEL         = os.getenv("EMBEDDING_MODEL", "text-embedding-ada-002")
+
+# ── Azure AI Search ────────────────────────────────────────────────
+AZURE_SEARCH_ENDPOINT = os.getenv("AZURE_SEARCH_ENDPOINT")
+SEARCH_ENDPOINT       = AZURE_SEARCH_ENDPOINT
+INDEX_REGLES          = "index-regles-assurance"
+
+# ── Fichiers CSV ───────────────────────────────────────────────────
+CSV_APPLICANTS         = "data/labeled_applicants.csv"
+CSV_VEHICLES           = "data/labeled_vehicles.csv"
+CSV_DRIVERS            = "data/labeled_additional_drivers.csv"
+CSV_LICENCE_VALIDATION = "data/licence_validation_hidden.csv"
+CSV_VIN_BLACKLIST      = "data/vin_blacklist_hidden.csv"
+
+# ── Fichier demandes ───────────────────────────────────────────────
+DEMANDES_FOLDER = "demandes"
+DEMANDES_FILE   = "demandes/demandes.xlsx"
+
+# ── RAG ────────────────────────────────────────────────────────────
+DOSSIER_PDFS  = "data/pdfs"
+CHUNK_SIZE    = 500
+CHUNK_OVERLAP = 50
+TOP_K_RESULTS = 5
+
+# ── Connexion Azure ────────────────────────────────────────────────
+def get_credential():
+    from azure.identity import DefaultAzureCredential
+    return DefaultAzureCredential()
+
+def get_openai_client():
+    from azure.identity import get_bearer_token_provider
+    from openai import AzureOpenAI
+    cred = get_credential()
+    tp   = get_bearer_token_provider(cred, "https://cognitiveservices.azure.com/.default")
+    return AzureOpenAI(azure_endpoint=AZURE_OPENAI_ENDPOINT, azure_ad_token_provider=tp, api_version=AZURE_API_VERSION)
+
+================================================================================
+FICHIER 5 : backend/rules/scoring.py
+================================================================================
+# ==============================================================================
+# FICHIER : backend/rules/scoring.py
+# ROLE    : Calcul du score de risque selon les regles Desjardins
+# SOURCE  : Images fournies - Driver profiles + Point values
+# ==============================================================================
+
+# ==============================================================================
+# SECTION 1 : PROFILS CONDUCTEUR
+# Profile 1 → licensed >= 15 ans
+# Profile 2 → licensed 4 a < 15 ans
+# Profile 3 → licensed < 4 ans OU G1/G2
+# ==============================================================================
+def get_driver_profile(years_licenced: int, licence_class: str) -> int:
+    if licence_class in ["G1", "G2"]:
+        return 3
+    if years_licenced >= 15:
+        return 1
+    if years_licenced >= 4:
+        return 2
+    return 3
+
+# ==============================================================================
+# SECTION 2 : TABLE DE POINTS PAR PROFIL
+# ==============================================================================
+POINTS = {
+    "minor_1st"              : {1: 2,  2: 2,  3: 4},
+    "minor_additional"       : {1: 4,  2: 5,  3: 6},
+    "major_each"             : {1: 12, 2: 16, 3: 16},
+    "careless_driving"       : {1: 15, 2: 16, 3: 16},
+    "serious_criminal"       : {1: 16, 2: 16, 3: 16},
+    "chargeable_acc_3yr"     : {1: 6,  2: 7,  3: 8},
+    "chargeable_acc_3_6yr"   : {1: 6,  2: 6,  3: 8},
+    "nonpayment_cancel_1st"  : {1: 4,  2: 4,  3: 4},
+    "nonpayment_cancel_addl" : {1: 6,  2: 6,  3: 6},
+}
+
+# ==============================================================================
+# SECTION 3 : SEUIL
+# Score >= 12 → declined_referred_gaa
+# ==============================================================================
+SCORE_THRESHOLD = 12
+
+# ==============================================================================
+# SECTION 4 : CALCUL DU SCORE POUR UN CONDUCTEUR
+# ==============================================================================
+def calculer_score_conducteur(row: dict, profile: int, is_principal: bool = True) -> dict:
+    """
+    Calcule le score de risque pour un conducteur.
+    row : dict avec les colonnes du CSV applicants ou additional_drivers
+    profile : 1, 2 ou 3
+    is_principal : True = conducteur principal (annulation non-paiement compte)
+    """
+    score   = 0
+    details = []
+
+    p = profile
+
+    # Infractions mineures
+    minor = int(row.get("minor_convictions_3yr", 0) or 0)
+    if minor >= 1:
+        pts = POINTS["minor_1st"][p]
+        score += pts
+        details.append(f"Infraction mineure 1re: +{pts}")
+    if minor > 1:
+        pts = POINTS["minor_additional"][p] * (minor - 1)
+        score += pts
+        details.append(f"Infractions mineures additionnelles ({minor-1}): +{pts}")
+
+    # Infractions majeures
+    major = int(row.get("major_convictions_3yr", 0) or 0)
+    if major > 0:
+        pts = POINTS["major_each"][p] * major
+        score += pts
+        details.append(f"Infractions majeures ({major}): +{pts}")
+
+    # Infractions graves / criminelles
+    serious = int(row.get("serious_convictions_3yr", 0) or 0)
+    if serious > 0:
+        pts = POINTS["serious_criminal"][p] * serious
+        score += pts
+        details.append(f"Infractions graves ({serious}): +{pts}")
+
+    # Accidents responsables 3 ans
+    acc_3yr = int(row.get("at_fault_accidents_3yr", 0) or 0)
+    if acc_3yr > 0:
+        pts = POINTS["chargeable_acc_3yr"][p] * acc_3yr
+        score += pts
+        details.append(f"Accidents responsables 3 ans ({acc_3yr}): +{pts}")
+
+    # Accidents responsables 3-6 ans
+    acc_6yr = int(row.get("at_fault_accidents_6yr", 0) or 0)
+    if acc_6yr > 0:
+        pts = POINTS["chargeable_acc_3_6yr"][p] * acc_6yr
+        score += pts
+        details.append(f"Accidents responsables 3-6 ans ({acc_6yr}): +{pts}")
+
+    # Annulation non-paiement (principal seulement)
+    if is_principal:
+        cancel = int(row.get("nonpayment_cancellations_3yr", 0) or 0)
+        if cancel >= 1:
+            pts = POINTS["nonpayment_cancel_1st"][p]
+            score += pts
+            details.append(f"Annulation non-paiement 1re: +{pts}")
+        if cancel > 1:
+            pts = POINTS["nonpayment_cancel_addl"][p] * (cancel - 1)
+            score += pts
+            details.append(f"Annulations non-paiement additionnelles ({cancel-1}): +{pts}")
+
+    return {"score": score, "profile": p, "details": details}
+
+# ==============================================================================
+# SECTION 5 : SCORE TOTAL (principal + conducteurs additionnels)
+# Note : conducteurs avec is_excluded=True ne comptent pas
+# ==============================================================================
+def calculer_score_total(applicant: dict, additional_drivers: list) -> dict:
+    """
+    Calcule le score total de la demande.
+    applicant : dict du conducteur principal
+    additional_drivers : liste de dicts des conducteurs additionnels
+    """
+    profile = get_driver_profile(
+        int(applicant.get("years_licenced", 0) or 0),
+        str(applicant.get("licence_class", "G") or "G")
+    )
+
+    result_principal = calculer_score_conducteur(applicant, profile, is_principal=True)
+    score_total      = result_principal["score"]
+    tous_details     = [f"[Principal - Profile {profile}]"] + result_principal["details"]
+
+    for driver in additional_drivers:
+        # Conducteurs exclus (OPCF 28A) ne comptent pas
+        if str(driver.get("is_excluded", False)).lower() in ["true", "1", "yes"]:
+            tous_details.append(f"[{driver.get('first_name','')} - EXCLU - 0 pts]")
+            continue
+
+        d_profile = get_driver_profile(
+            int(driver.get("years_licenced", 0) or 0),
+            str(driver.get("licence_class", "G") or "G")
+        )
+        d_result = calculer_score_conducteur(driver, d_profile, is_principal=False)
+        score_total += d_result["score"]
+        tous_details.append(f"[{driver.get('first_name','')} - Profile {d_profile}: +{d_result['score']}]")
+        tous_details.extend(d_result["details"])
+
+    return {
+        "score_total"     : score_total,
+        "profile_principal": profile,
+        "details"         : tous_details,
+        "depasse_seuil"   : score_total >= SCORE_THRESHOLD,
+    }
+
+================================================================================
+FICHIER 6 : backend/rules/blacklist.py
+================================================================================
+# ==============================================================================
+# FICHIER : backend/rules/blacklist.py
+# ROLE    : Verification blacklist VIN + regles de refus direct
+# ==============================================================================
+
+import pandas as pd
+from backend.config.settings import CSV_VIN_BLACKLIST
+
+# ==============================================================================
+# SECTION 1 : VERIFICATION VIN BLACKLIST
+# ==============================================================================
+def verifier_vin_blacklist(vin: str) -> dict:
+    """Verifie si un VIN est dans la liste noire"""
+    try:
+        df = pd.read_csv(CSV_VIN_BLACKLIST)
+        match = df[df["vin"].astype(str).str.upper() == str(vin).upper()]
+        if not match.empty:
+            return {
+                "blacklisted": True,
+                "reason"     : match.iloc[0].get("reason", "VIN blackliste"),
+                "added_date" : str(match.iloc[0].get("added_date", "")),
+            }
+    except Exception as e:
+        print(f"Erreur lecture blacklist : {e}")
+    return {"blacklisted": False}
+
+# ==============================================================================
+# SECTION 2 : REGLES DE REFUS DIRECT
+# Ces conditions entrainent un refus immediat sans verification humaine
+# ==============================================================================
+REFUS_DIRECTS = [
+    ("has_dui_5yr",                True,  "DUI dans les 5 dernières années"),
+    ("has_criminal_record_10yr",   True,  "Casier judiciaire dans les 10 ans"),
+    ("refused_insurance_3yr",      True,  "Assurance refusée dans les 3 ans"),
+    ("refused_to_provide_info",    True,  "Refus de fournir informations"),
+    ("no_insurable_interest",      True,  "Aucun intérêt assurable"),
+    ("owes_money_to_desjardins",   True,  "Dette envers Desjardins"),
+    ("has_misrepresentation_history", True, "Historique de fausse déclaration"),
+    ("licence_suspension_3yr",     True,  "Suspension de permis dans les 3 ans"),
+]
+
+def verifier_refus_directs(applicant: dict) -> dict:
+    """Verifie si la demande doit etre refusee directement"""
+    raisons = []
+    for col, val_refus, description in REFUS_DIRECTS:
+        val = applicant.get(col, False)
+        if str(val).lower() in ["true", "1", "yes"]:
+            raisons.append(description)
+
+    if raisons:
+        return {"refuse": True, "raisons": raisons}
+    return {"refuse": False}
+
+# ==============================================================================
+# SECTION 3 : VERIFICATION VEHICULE (refus direct si valeur >= 500,000)
+# ==============================================================================
+def verifier_vehicule_refus(vehicle: dict) -> dict:
+    """Verifie si le vehicule doit etre refuse directement"""
+    raisons = []
+    val = float(vehicle.get("vehicle_value", 0) or 0)
+    if val >= 500_000:
+        raisons.append(f"Valeur véhicule trop élevée ({val:,.0f}$)")
+    if str(vehicle.get("is_kit_car", False)).lower() in ["true", "1", "yes"]:
+        raisons.append("Véhicule kit car")
+    if str(vehicle.get("is_used_on_racetrack", False)).lower() in ["true", "1", "yes"]:
+        raisons.append("Véhicule utilisé sur circuit")
+
+    if raisons:
+        return {"refuse": True, "raisons": raisons}
+    return {"refuse": False}
+
+================================================================================
+FICHIER 7 : backend/rules/decisions.py
+================================================================================
+# ==============================================================================
+# FICHIER : backend/rules/decisions.py
+# ROLE    : Moteur de decision final — accepte / verification_humaine / refuse
+# ==============================================================================
+
+from backend.rules.blacklist import verifier_vin_blacklist, verifier_refus_directs, verifier_vehicule_refus
+from backend.rules.scoring   import calculer_score_total
+
+# ==============================================================================
+# STATUTS POSSIBLES
+# ==============================================================================
+STATUT_REFUSE           = "REFUSE"
+STATUT_VERIFICATION     = "VERIFICATION_HUMAINE"
+STATUT_APPROUVE         = "APPROUVE"
+
+# ==============================================================================
+# SECTION 1 : TRIGGERS POUR VERIFICATION HUMAINE
+# ==============================================================================
+TRIGGERS_HUMAIN = [
+    ("vehicle_value",             lambda v: 200_000 <= float(v or 0) < 500_000, "Véhicule haute valeur (200k-500k$)",         "high_value_vehicle"),
+    ("is_modified",               lambda v: str(v).lower() in ["true","1","yes"], "Véhicule modifié",                         "modified_vehicle"),
+    ("is_salvage",                lambda v: str(v).lower() in ["true","1","yes"], "Véhicule salvage",                         "salvage_or_rebuilt"),
+    ("is_rebuilt",                lambda v: str(v).lower() in ["true","1","yes"], "Véhicule reconstruit",                     "salvage_or_rebuilt"),
+    ("has_gap_in_coverage",       lambda v: str(v).lower() in ["true","1","yes"], "Interruption de couverture",               "gap_in_coverage"),
+    ("has_foreign_driving_experience", lambda v: str(v).lower() in ["true","1","yes"], "Expérience de conduite étrangère",   "foreign_experience"),
+    ("commercial_use_description",lambda v: v and len(str(v)) > 5,               "Usage commercial borderline",               "commercial_use_borderline"),
+]
+
+def verifier_triggers_humain(applicant: dict, vehicle: dict) -> list:
+    """Retourne la liste des triggers de verification humaine"""
+    triggers = []
+
+    # Triggers vehicule
+    for col, condition, desc, code in TRIGGERS_HUMAIN:
+        src = vehicle if col in ["vehicle_value","is_modified","is_salvage","is_rebuilt","commercial_use_description"] else applicant
+        val = src.get(col)
+        if val is not None and condition(val):
+            triggers.append({"code": code, "description": desc})
+
+    # years_prior_insurance = 0
+    if int(applicant.get("years_prior_insurance", 1) or 1) == 0:
+        triggers.append({"code": "gap_in_coverage", "description": "Aucune assurance préalable"})
+
+    # Modification value >= 2000
+    if str(vehicle.get("is_modified","")).lower() in ["true","1","yes"]:
+        mod_val = float(vehicle.get("modification_value_cad", 0) or 0)
+        if mod_val < 2000:
+            # Enlever le trigger si modification < 2000
+            triggers = [t for t in triggers if t["code"] != "modified_vehicle"]
+
+    return triggers
+
+# ==============================================================================
+# SECTION 2 : DECISION FINALE
+# ==============================================================================
+def evaluer_demande(applicant: dict, vehicle: dict, additional_drivers: list = None) -> dict:
+    """
+    Evalue une demande d'assurance et retourne la decision finale.
+
+    Retourne un dict avec :
+    - statut       : REFUSE / VERIFICATION_HUMAINE / APPROUVE
+    - score        : score de risque calcule
+    - raisons      : liste des raisons
+    - triggers     : triggers de verification humaine
+    - details      : details du calcul de score
+    - estimation   : estimation tarifaire approximative
+    """
+    if additional_drivers is None:
+        additional_drivers = []
+
+    raisons_refus    = []
+    triggers_humain  = []
+
+    # ── ETAPE 1 : Verification VIN blacklist ───────────────────────
+    vin = vehicle.get("vin", "")
+    if vin:
+        vin_check = verifier_vin_blacklist(vin)
+        if vin_check["blacklisted"]:
+            return {
+                "statut"    : STATUT_REFUSE,
+                "score"     : 0,
+                "raisons"   : [f"VIN blacklisté : {vin_check['reason']}"],
+                "triggers"  : [],
+                "details"   : ["Refus automatique — VIN dans liste noire"],
+                "estimation": None,
+            }
+
+    # ── ETAPE 2 : Refus directs applicant ─────────────────────────
+    refus_app = verifier_refus_directs(applicant)
+    if refus_app["refuse"]:
+        return {
+            "statut"    : STATUT_REFUSE,
+            "score"     : 0,
+            "raisons"   : refus_app["raisons"],
+            "triggers"  : [],
+            "details"   : ["Refus automatique — critères d'exclusion directe"],
+            "estimation": None,
+        }
+
+    # ── ETAPE 3 : Refus direct vehicule ───────────────────────────
+    refus_veh = verifier_vehicule_refus(vehicle)
+    if refus_veh["refuse"]:
+        return {
+            "statut"    : STATUT_REFUSE,
+            "score"     : 0,
+            "raisons"   : refus_veh["raisons"],
+            "triggers"  : [],
+            "details"   : ["Refus automatique — véhicule non assurable"],
+            "estimation": None,
+        }
+
+    # ── ETAPE 4 : Calcul score de risque ──────────────────────────
+    score_result = calculer_score_total(applicant, additional_drivers)
+    score        = score_result["score_total"]
+
+    if score_result["depasse_seuil"]:
+        return {
+            "statut"    : STATUT_REFUSE,
+            "score"     : score,
+            "raisons"   : [f"Score de risque trop élevé : {score} pts (seuil : 12)"],
+            "triggers"  : [],
+            "details"   : score_result["details"],
+            "estimation": None,
+        }
+
+    # ── ETAPE 5 : Triggers verification humaine ───────────────────
+    triggers = verifier_triggers_humain(applicant, vehicle)
+
+    # Selon la consigne : TOUTE demande (sauf blacklist) = verification humaine
+    # On force toujours VERIFICATION_HUMAINE sauf refus direct
+    triggers_humain = triggers if triggers else [{"code": "standard_review", "description": "Vérification standard requise"}]
+
+    # ── ETAPE 6 : Estimation tarifaire ────────────────────────────
+    estimation = calculer_estimation(applicant, vehicle, score, score_result["profile_principal"])
+
+    return {
+        "statut"    : STATUT_VERIFICATION,
+        "score"     : score,
+        "raisons"   : [],
+        "triggers"  : triggers_humain,
+        "details"   : score_result["details"],
+        "estimation": estimation,
+    }
+
+# ==============================================================================
+# SECTION 3 : ESTIMATION TARIFAIRE
+# Formule simplifiee basee sur les donnees disponibles
+# ==============================================================================
+def calculer_estimation(applicant: dict, vehicle: dict, score: int, profile: int) -> dict:
+    """Calcule une estimation approximative de la prime annuelle"""
+    base = 1200.0
+
+    # Ajustement vehicule
+    val_veh = float(vehicle.get("vehicle_value", 20000) or 20000)
+    base += val_veh * 0.005
+
+    # Ajustement profil
+    ajust_profil = {1: 1.0, 2: 1.15, 3: 1.35}
+    base *= ajust_profil.get(profile, 1.0)
+
+    # Ajustement score
+    base *= (1 + score * 0.08)
+
+    # Ajustements specifiques
+    if str(vehicle.get("has_winter_tires","")).lower() in ["true","1","yes"]:
+        base *= 0.95  # -5% pneus hiver
+    if str(vehicle.get("has_anti_theft","")).lower() in ["true","1","yes"]:
+        base *= 0.97  # -3% antivol
+    if str(applicant.get("completed_driving_course","")).lower() in ["true","1","yes"]:
+        base *= 0.95  # -5% cours conduite
+    if str(applicant.get("is_existing_desjardins_member","")).lower() in ["true","1","yes"]:
+        base *= 0.95  # -5% membre existant
+    if str(applicant.get("has_home_insurance","")).lower() in ["true","1","yes"]:
+        base *= 0.93  # -7% assurance habitation
+
+    prime_annuelle = round(base, 2)
+    return {
+        "prime_annuelle"  : prime_annuelle,
+        "prime_mensuelle" : round(prime_annuelle / 12, 2),
+        "score_risque"    : score,
+        "profil"          : profile,
+    }
+================================================================================
+FICHIER 8 : backend/utils/csv_handler.py
+================================================================================
+# ==============================================================================
+# FICHIER : backend/utils/csv_handler.py
+# ROLE    : Lecture des fichiers CSV et verification des clients
+# ==============================================================================
+
+import pandas as pd
+from backend.config.settings import (
+    CSV_APPLICANTS, CSV_VEHICLES, CSV_DRIVERS, CSV_LICENCE_VALIDATION
+)
+
+# ==============================================================================
+# FONCTION : Login client — verification applicant_id + code postal
+# ==============================================================================
+def verifier_login(applicant_id: str, postal_code: str) -> dict:
+    """
+    Verifie les credentials du client.
+    Retourne le profil client si valide, sinon None.
+    """
+    try:
+        df = pd.read_csv(CSV_APPLICANTS)
+        match = df[df["applicant_id"].astype(str) == str(applicant_id)]
+        if match.empty:
+            return {"success": False, "message": "Identifiant client introuvable."}
+        client = match.iloc[0].to_dict()
+        # Verification code postal
+        csv_postal = str(client.get("postal_code", "")).replace(" ", "").upper()
+        input_postal = str(postal_code).replace(" ", "").upper()
+        if csv_postal != input_postal:
+            return {"success": False, "message": "Code postal incorrect."}
+        return {"success": True, "client": client}
+    except Exception as e:
+        return {"success": False, "message": f"Erreur : {str(e)}"}
+
+# ==============================================================================
+# FONCTION : Recuperer les vehicules d'un client
+# ==============================================================================
+def get_vehicules_client(applicant_id: str) -> list:
+    try:
+        df = pd.read_csv(CSV_VEHICLES)
+        rows = df[df["applicant_id"].astype(str) == str(applicant_id)]
+        return rows.to_dict("records")
+    except Exception as e:
+        print(f"Erreur lecture vehicules : {e}")
+        return []
+
+# ==============================================================================
+# FONCTION : Recuperer les conducteurs additionnels d'un client
+# ==============================================================================
+def get_conducteurs_additionnels(applicant_id: str) -> list:
+    try:
+        df = pd.read_csv(CSV_DRIVERS)
+        rows = df[df["applicant_id"].astype(str) == str(applicant_id)]
+        return rows.to_dict("records")
+    except Exception as e:
+        print(f"Erreur lecture conducteurs : {e}")
+        return []
+
+# ==============================================================================
+# FONCTION : Recuperer un client par applicant_id
+# ==============================================================================
+def get_client(applicant_id: str) -> dict:
+    try:
+        df = pd.read_csv(CSV_APPLICANTS)
+        match = df[df["applicant_id"].astype(str) == str(applicant_id)]
+        if not match.empty:
+            return match.iloc[0].to_dict()
+    except Exception as e:
+        print(f"Erreur lecture client : {e}")
+    return {}
+
+# ==============================================================================
+# FONCTION : Valider le permis d'un client
+# ==============================================================================
+def valider_permis(applicant_id: str) -> dict:
+    try:
+        df = pd.read_csv(CSV_LICENCE_VALIDATION)
+        match = df[df["applicant_id"].astype(str) == str(applicant_id)]
+        if not match.empty:
+            row = match.iloc[0]
+            return {
+                "is_valid"         : bool(row.get("is_valid_licence", False)),
+                "validation_status": str(row.get("validation_status", "")),
+                "licence_class"    : str(row.get("licence_class", "")),
+                "years_licenced"   : int(row.get("years_licenced", 0) or 0),
+            }
+    except Exception as e:
+        print(f"Erreur validation permis : {e}")
+    return {"is_valid": True, "validation_status": "non_verifie"}
+
+# ==============================================================================
+# FONCTION : Lister toutes les demandes (pour employe)
+# ==============================================================================
+def lister_tous_clients() -> list:
+    try:
+        df = pd.read_csv(CSV_APPLICANTS)
+        return df[["applicant_id","first_name","last_name","email","city","province"]].to_dict("records")
+    except Exception as e:
+        print(f"Erreur lecture clients : {e}")
+        return []
+
+================================================================================
+FICHIER 9 : backend/utils/demandes_excel.py
+================================================================================
+# ==============================================================================
+# FICHIER : backend/utils/demandes_excel.py
+# ROLE    : Gestion du fichier Excel des demandes d'assurance
+# ==============================================================================
+
+import os
+import pandas as pd
+from datetime import datetime
+from backend.config.settings import DEMANDES_FILE, DEMANDES_FOLDER
+
+# ==============================================================================
+# COLONNES DU FICHIER EXCEL
+# ==============================================================================
+COLONNES = [
+    "demande_id", "applicant_id", "first_name", "last_name", "email", "phone",
+    "vehicle_make", "vehicle_model", "vehicle_year", "vehicle_vin", "vehicle_value",
+    "score_risque", "profil_conducteur",
+    "statut",           # APPROUVE / VERIFICATION_HUMAINE / REFUSE
+    "triggers",         # raisons de verification humaine
+    "raisons_refus",    # raisons de refus
+    "prime_annuelle", "prime_mensuelle",
+    "date_demande", "date_decision", "employe_decision", "commentaire_employe",
+]
+
+# ==============================================================================
+# FONCTION : Initialiser le fichier Excel s'il n'existe pas
+# ==============================================================================
+def init_fichier():
+    os.makedirs(DEMANDES_FOLDER, exist_ok=True)
+    if not os.path.exists(DEMANDES_FILE):
+        df = pd.DataFrame(columns=COLONNES)
+        df.to_excel(DEMANDES_FILE, index=False)
+
+# ==============================================================================
+# FONCTION : Creer une nouvelle demande
+# ==============================================================================
+def creer_demande(applicant: dict, vehicle: dict, evaluation: dict) -> str:
+    """
+    Cree une nouvelle demande dans le fichier Excel.
+    Retourne le demande_id genere.
+    """
+    init_fichier()
+    df = pd.read_excel(DEMANDES_FILE)
+
+    # Generer un ID unique
+    demande_id = f"DEM-{datetime.now().strftime('%Y%m%d%H%M%S')}-{applicant.get('applicant_id','')}"
+
+    estimation = evaluation.get("estimation") or {}
+    triggers   = "; ".join([t["description"] for t in evaluation.get("triggers", [])])
+    raisons    = "; ".join(evaluation.get("raisons", []))
+
+    nouvelle = {
+        "demande_id"         : demande_id,
+        "applicant_id"       : applicant.get("applicant_id", ""),
+        "first_name"         : applicant.get("first_name", ""),
+        "last_name"          : applicant.get("last_name", ""),
+        "email"              : applicant.get("email", ""),
+        "phone"              : applicant.get("phone", ""),
+        "vehicle_make"       : vehicle.get("make", ""),
+        "vehicle_model"      : vehicle.get("model", ""),
+        "vehicle_year"       : vehicle.get("year", ""),
+        "vehicle_vin"        : vehicle.get("vin", ""),
+        "vehicle_value"      : vehicle.get("vehicle_value", ""),
+        "score_risque"       : evaluation.get("score", 0),
+        "profil_conducteur"  : estimation.get("profil", ""),
+        "statut"             : evaluation.get("statut", ""),
+        "triggers"           : triggers,
+        "raisons_refus"      : raisons,
+        "prime_annuelle"     : estimation.get("prime_annuelle", ""),
+        "prime_mensuelle"    : estimation.get("prime_mensuelle", ""),
+        "date_demande"       : datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "date_decision"      : "",
+        "employe_decision"   : "",
+        "commentaire_employe": "",
+    }
+
+    df = pd.concat([df, pd.DataFrame([nouvelle])], ignore_index=True)
+    df.to_excel(DEMANDES_FILE, index=False)
+    return demande_id
+
+# ==============================================================================
+# FONCTION : Lire toutes les demandes
+# ==============================================================================
+def lire_demandes() -> pd.DataFrame:
+    init_fichier()
+    return pd.read_excel(DEMANDES_FILE)
+
+# ==============================================================================
+# FONCTION : Lire les demandes d'un client
+# ==============================================================================
+def lire_demandes_client(applicant_id: str) -> list:
+    df = lire_demandes()
+    rows = df[df["applicant_id"].astype(str) == str(applicant_id)]
+    return rows.to_dict("records")
+
+# ==============================================================================
+# FONCTION : Mettre a jour le statut d'une demande (par employe)
+# ==============================================================================
+def mettre_a_jour_statut(demande_id: str, statut: str, employe: str, commentaire: str = "") -> bool:
+    try:
+        init_fichier()
+        df = pd.read_excel(DEMANDES_FILE)
+        mask = df["demande_id"].astype(str) == str(demande_id)
+        if mask.sum() == 0:
+            return False
+        df.loc[mask, "statut"]              = statut
+        df.loc[mask, "employe_decision"]    = employe
+        df.loc[mask, "commentaire_employe"] = commentaire
+        df.loc[mask, "date_decision"]       = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        df.to_excel(DEMANDES_FILE, index=False)
+        return True
+    except Exception as e:
+        print(f"Erreur MAJ statut : {e}")
+        return False
+
+# ==============================================================================
+# FONCTION : Statistiques pour employe / developpeur
+# ==============================================================================
+def get_stats() -> dict:
+    df = lire_demandes()
+    if df.empty:
+        return {"total": 0, "approuve": 0, "refuse": 0, "en_attente": 0}
+    return {
+        "total"     : len(df),
+        "approuve"  : len(df[df["statut"] == "APPROUVE"]),
+        "refuse"    : len(df[df["statut"] == "REFUSE"]),
+        "en_attente": len(df[df["statut"] == "VERIFICATION_HUMAINE"]),
+    }
+
+================================================================================
+FICHIER 10 : backend/agents/agent_rag.py
+================================================================================
+# ==============================================================================
+# FICHIER : backend/agents/agent_rag.py
+# ROLE    : Agent RAG pour repondre aux questions sur les regles d'assurance
+# ==============================================================================
+
+import asyncio
+import concurrent.futures
+from azure.search.documents import SearchClient
+from backend.config.settings import (
+    SEARCH_ENDPOINT, INDEX_REGLES, EMBEDDING_MODEL,
+    AZURE_OPENAI_DEPLOYMENT, TOP_K_RESULTS,
+    get_credential, get_openai_client
+)
+
+# ==============================================================================
+# FONCTION : Embedding
+# ==============================================================================
+def get_embedding(openai_client, texte: str) -> list:
+    return openai_client.embeddings.create(
+        input=texte, model=EMBEDDING_MODEL
+    ).data[0].embedding
+
+# ==============================================================================
+# FONCTION : Recherche RAG
+# ==============================================================================
+def recherche_rag(credential, openai_client, question: str) -> list:
+    try:
+        q_emb = get_embedding(openai_client, question)
+        client = SearchClient(SEARCH_ENDPOINT, INDEX_REGLES, credential)
+        resultats = list(client.search(
+            search_text=question,
+            vector_queries=[{"vector": q_emb, "fields": "embedding", "k": TOP_K_RESULTS, "kind": "vector"}]
+        ))
+        return [{"contenu": r["contenu"], "fichier": r["fichier"], "page": r["page"]} for r in resultats]
+    except Exception as e:
+        print(f"Erreur RAG : {e}")
+        return []
+
+# ==============================================================================
+# AGENT : Chatbot regles assurance (async)
+# ==============================================================================
+async def agent_chatbot_assurance(question: str, historique: list = None) -> dict:
+    """Repond aux questions sur les regles d'assurance automobile"""
+    credential    = get_credential()
+    openai_client = get_openai_client()
+
+    resultats = recherche_rag(credential, openai_client, question)
+
+    contexte = "\n\n".join([
+        f"[{r['fichier']} p.{r['page']}]\n{r['contenu']}"
+        for r in resultats
+    ]) if resultats else "Aucun document trouve."
+
+    messages = [
+        {"role": "system", "content": """
+        Tu es un assistant specialise en assurance automobile pour Desjardins.
+        Tu reponds aux questions des clients sur les regles d'assurance.
+        - Reponds en francais
+        - Sois clair et professionnel
+        - Base-toi UNIQUEMENT sur les documents fournis
+        - Si tu ne sais pas, dis-le clairement
+        - Ne donne jamais de conseil juridique ou financier definitif
+        """},
+        {"role": "user", "content": f"Documents:\n{contexte}\n\nQuestion: {question}"}
+    ]
+
+    if historique:
+        for h in historique[-4:]:
+            messages.insert(-1, {"role": h["role"], "content": h["content"]})
+
+    response = openai_client.chat.completions.create(
+        model=AZURE_OPENAI_DEPLOYMENT,
+        messages=messages,
+        max_tokens=600,
+        temperature=0.3,
+    )
+
+    return {
+        "reponse": response.choices[0].message.content,
+        "sources": resultats,
+        "tokens" : response.usage.total_tokens,
+    }
+
+# ==============================================================================
+# WRAPPER SYNCHRONE pour Streamlit
+# ==============================================================================
+def chatbot_assurance(question: str, historique: list = None) -> dict:
+    def run():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(agent_chatbot_assurance(question, historique))
+        finally:
+            loop.close()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        return ex.submit(run).result(timeout=60)
+
+================================================================================
+
+================================================================================
+FICHIER 11 : backend/agents/agent_souscription.py  [MIS À JOUR]
+================================================================================
+
+# ==============================================================================
+# FICHIER : backend/agents/agent_souscription.py  (VERSION MISE À JOUR)
+# ROLE    : Agent d'explication et d'analyse des demandes d'assurance.
+#           La tarification est maintenant déléguée à agent_tarification.py.
+#           Le pipeline complet passe par orchestrateur.py.
+#
+# CHANGEMENTS vs version initiale :
+#   - agent_evaluer_demande() : retire calculer_estimation() hardcodée,
+#     l'estimation VMR est injectée par l'orchestrateur.
+#   - Reste en place pour générer les explications client et employé.
+# ==============================================================================
+
+import asyncio
+import concurrent.futures
+from backend.config.settings import AZURE_OPENAI_DEPLOYMENT, get_openai_client
+from backend.rules.decisions import evaluer_demande
+from backend.utils.csv_handler import get_vehicules_client, get_conducteurs_additionnels
+from backend.utils.demandes_excel import creer_demande
+
+
+# ==============================================================================
+# AGENT : Évaluation d'une demande (async)
+# NOTE  : Dans le nouveau pipeline, cet agent est appelé via orchestrateur.py
+#         qui injecte la tarification VMR avant de générer l'explication.
+#         Cet agent reste disponible en standalone pour la compatibilité.
+# ==============================================================================
+async def agent_evaluer_demande(applicant: dict, vehicle_data: dict) -> dict:
+    """
+    Évalue une demande d'assurance et génère une explication GPT.
+    ⚠️ En standalone, l'estimation tarifaire sera absente (pas de VMR).
+       Préférer orchestrateur.orchestrer_evaluation() pour le pipeline complet.
+    """
+    openai_client = get_openai_client()
+
+    # Récupérer conducteurs additionnels
+    additional_drivers = get_conducteurs_additionnels(str(applicant.get("applicant_id", "")))
+
+    # Évaluation par les règles
+    evaluation = evaluer_demande(applicant, vehicle_data, additional_drivers)
+
+    # Créer la demande dans Excel
+    demande_id = creer_demande(applicant, vehicle_data, evaluation)
+    evaluation["demande_id"] = demande_id
+
+    # Générer une explication claire pour le client
+    statut   = evaluation["statut"]
+    score    = evaluation["score"]
+    details  = "\n".join(evaluation.get("details", []))
+    triggers = "\n".join([t["description"] for t in evaluation.get("triggers", [])])
+    est      = evaluation.get("estimation") or {}
+
+    prompt = f"""
+Tu es un agent d'assurance automobile de Desjardins.
+Explique au client le résultat de son évaluation d'assurance de façon claire et professionnelle en français.
+
+Statut          : {statut}
+Score de risque : {score}/12
+Détails calcul  : {details}
+Triggers        : {triggers or 'aucun'}
+Prime estimée   : {est.get('prime_annuelle', 'N/A')}$ / an
+
+Règles :
+- Si REFUSE            : explique pourquoi sans être brutal, exprime de la compassion
+- Si VERIFICATION_HUMAINE : explique que la demande est en cours de traitement (1-3 jours ouvrables)
+- Si APPROUVE          : félicite et donne les détails de la prime
+- Sois concis (max 150 mots), professionnel et humain.
+"""
+
+    response = openai_client.chat.completions.create(
+        model=AZURE_OPENAI_DEPLOYMENT,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=300,
+        temperature=0.4,
+    )
+
+    evaluation["explication_client"] = response.choices[0].message.content
+    return evaluation
+
+
+# ==============================================================================
+# AGENT : Analyse employé (async)
+# Utilisé par orchestrateur.orchestrer_analyse_employe()
+# ==============================================================================
+async def agent_analyse_employe(demande: dict) -> dict:
+    """
+    Analyse une demande pour aider l'employé à prendre une décision.
+    Tient compte de la tarification VMR si disponible dans la demande.
+    """
+    openai_client = get_openai_client()
+
+    # Contexte VMR si disponible
+    vmr_context = ""
+    if demande.get("groupe_vmr"):
+        vmr_context = f"""
+- Groupe VMR          : {demande.get('groupe_vmr')} (source : {demande.get('source_vmr','N/A')})
+- Justification VMR   : {demande.get('justification_vmr','')}
+- Souscription spéc.  : {demande.get('necessite_souscription_specialisee', False)}"""
+
+    prompt = f"""Tu es un souscripteur senior chez Desjardins Assurances.
+Analyse cette demande d'assurance et donne une recommandation claire à l'employé.
+
+Informations demande :
+- Client          : {demande.get('first_name')} {demande.get('last_name')}
+- Véhicule        : {demande.get('vehicle_year')} {demande.get('vehicle_make')} {demande.get('vehicle_model')}
+- Valeur véhicule : {demande.get('vehicle_value')}$
+- Score risque    : {demande.get('score_risque')}
+- Profil conducteur : {demande.get('profil_conducteur')}{vmr_context}
+- Triggers        : {demande.get('triggers')}
+- Prime estimée   : {demande.get('prime_annuelle')}$/an  ({demande.get('prime_mensuelle')}$/mois)
+
+Fournis :
+1. Analyse du risque (2-3 phrases)
+2. Points d'attention spécifiques (VMR, triggers, profil)
+3. Recommandation : APPROUVER / REFUSER + justification courte
+"""
+
+    response = openai_client.chat.completions.create(
+        model=AZURE_OPENAI_DEPLOYMENT,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=400,
+        temperature=0.3,
+    )
+
+    return {
+        "analyse_employe": response.choices[0].message.content,
+        "demande_id"     : demande.get("demande_id", ""),
+    }
+
+
+# ==============================================================================
+# WRAPPERS SYNCHRONES (compatibilité — préférer orchestrateur pour le pipeline)
+# ==============================================================================
+
+def evaluer_demande_sync(applicant: dict, vehicle_data: dict) -> dict:
+    """
+    ⚠️ LEGACY — Pour le pipeline complet avec VMR, utiliser :
+       from backend.agents.orchestrateur import orchestrer_evaluation
+    """
+    def run():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(agent_evaluer_demande(applicant, vehicle_data))
+        finally:
+            loop.close()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        return ex.submit(run).result(timeout=120)
+
+
+def analyser_demande_employe_sync(demande: dict) -> dict:
+    """Wrapper synchrone pour l'analyse employé (inchangé)."""
+    def run():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(agent_analyse_employe(demande))
+        finally:
+            loop.close()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        return ex.submit(run).result(timeout=120)
+
+
+================================================================================
+FICHIER 12 : backend/agents/agent_tarification.py  [NOUVEAU]
+================================================================================
+
 # ==============================================================================
 # FICHIER : backend/agents/agent_tarification.py
 # ROLE    : Agent de tarification basé sur la logique VMR (vmr_vehicle_rating_fr)
@@ -92,6 +1107,7 @@ async def _determiner_groupe_vmr(
       justification : str
       contexte_rag  : list[dict]  (chunks retrouvés)
     """
+    # Requête RAG ciblée sur le VMR
     query_vmr = (
         f"groupe tarification VMR {make} {model} {year} "
         f"échelle groupes véhicule assurance"
@@ -103,6 +1119,7 @@ async def _determiner_groupe_vmr(
         for c in chunks
     ]) if chunks else "Aucun document VMR trouvé."
 
+    # Flags spéciaux
     flags = []
     if is_modified : flags.append("véhicule modifié")
     if is_antique  : flags.append("véhicule antique")
@@ -151,6 +1168,7 @@ Réponds UNIQUEMENT en JSON valide, sans markdown ni backticks :
     )
 
     raw = response.choices[0].message.content.strip()
+    # Nettoyage défensif
     raw = raw.replace("```json", "").replace("```", "").strip()
     j = raw.find("{"); e = raw.rfind("}") + 1
 
@@ -192,6 +1210,7 @@ async def _calculer_prime_vmr(
     - Le profil conducteur et le score de risque
     - Les rabais applicables
     """
+    # RAG sur calcul de prime et facteurs d'ajustement
     query_prime = (
         f"calcul prime assurance automobile groupe VMR {groupe_vmr} "
         f"facteurs ajustement rabais profil conducteur score risque"
@@ -203,6 +1222,7 @@ async def _calculer_prime_vmr(
         for c in chunks_prime
     ]) if chunks_prime else "Aucun document de tarification trouvé."
 
+    # Préparer les inputs client
     rabais = []
     if str(vehicle.get("has_winter_tires","")).lower()   in ["true","1","yes"]: rabais.append("pneus hiver")
     if str(vehicle.get("has_anti_theft","")).lower()      in ["true","1","yes"]: rabais.append("antivol")
@@ -320,6 +1340,7 @@ async def agent_tarification_vmr(
       composantes       : list
       note_client       : str
       necessite_souscription_specialisee : bool
+      tokens_utilises   : int  (approximatif)
     """
     credential    = get_credential()
     openai_client = get_openai_client()
@@ -352,10 +1373,12 @@ async def agent_tarification_vmr(
     )
 
     return {
+        # VMR
         "groupe_vmr"               : vmr["groupe_vmr"],
         "source_vmr"               : vmr["source"],
         "justification_vmr"        : vmr["justification"],
         "base_annuelle_repli"      : vmr.get("base_annuelle_repli"),
+        # Prime
         "prime_annuelle"           : prime.get("prime_annuelle_estimee"),
         "prime_mensuelle"          : prime.get("prime_mensuelle_estimee"),
         "fourchette_basse"         : prime.get("fourchette_basse"),
@@ -363,6 +1386,7 @@ async def agent_tarification_vmr(
         "composantes"              : prime.get("composantes", []),
         "note_client"              : prime.get("note_client", ""),
         "necessite_souscription_specialisee": prime.get("necessite_souscription_specialisee", False),
+        # Sources RAG (pour debug / page Développeur)
         "_rag_vmr"                 : vmr.get("contexte_rag", []),
         "_rag_prime"               : prime.get("contexte_rag", []),
     }
@@ -398,8 +1422,9 @@ def tarification_vmr_sync(
 
 
 ================================================================================
-FICHIER 2 : backend/agents/orchestrateur.py  [NOUVEAU]
+FICHIER 13 : backend/agents/orchestrateur.py  [NOUVEAU]
 ================================================================================
+
 # ==============================================================================
 # FICHIER : backend/agents/orchestrateur.py
 # ROLE    : Orchestrateur central — coordonne agent_rag, agent_souscription
@@ -494,7 +1519,7 @@ async def _pipeline_evaluation(
       - pipeline_log   : list[dict] (log de chaque étape)
       - duree_totale_ms: int
     """
-    t_start      = time.time()
+    t_start    = time.time()
     pipeline_log = []
 
     def _progress(msg: str):
@@ -534,6 +1559,7 @@ async def _pipeline_evaluation(
     score      = evaluation["score"]
     triggers   = evaluation.get("triggers", [])
 
+    # Profil conducteur depuis le score result (déjà calculé dans decisions.py)
     from backend.rules.scoring import get_driver_profile
     profil = get_driver_profile(
         int(applicant.get("years_licenced", 0) or 0),
@@ -571,11 +1597,11 @@ async def _pipeline_evaluation(
             pipeline_log.append(_etape(
                 "tarification_vmr", "ok",
                 {
-                    "groupe_vmr"     : tarification["groupe_vmr"],
-                    "source_vmr"     : tarification["source_vmr"],
-                    "prime_annuelle" : tarification.get("prime_annuelle"),
+                    "groupe_vmr"    : tarification["groupe_vmr"],
+                    "source_vmr"    : tarification["source_vmr"],
+                    "prime_annuelle": tarification.get("prime_annuelle"),
                     "prime_mensuelle": tarification.get("prime_mensuelle"),
-                    "specialisee"    : tarification.get("necessite_souscription_specialisee"),
+                    "specialisee"   : tarification.get("necessite_souscription_specialisee"),
                 },
                 duree_ms=int((time.time() - t0) * 1000),
             ))
@@ -596,12 +1622,10 @@ async def _pipeline_evaluation(
                 {"erreur": str(e)},
                 duree_ms=int((time.time() - t0) * 1000),
             ))
+            # Fallback : conserver l'estimation basique de decisions.py
             tarification = evaluation.get("estimation")
     else:
-        pipeline_log.append(_etape(
-            "tarification_vmr", "skip",
-            {"raison": "Dossier refusé — tarification non calculée"}
-        ))
+        pipeline_log.append(_etape("tarification_vmr", "skip", {"raison": "Dossier refusé — tarification non calculée"}))
 
     # ──────────────────────────────────────────────────────────────────────────
     # ÉTAPE 4 — Génération de l'explication client (GPT)
@@ -615,11 +1639,7 @@ async def _pipeline_evaluation(
     triggers_str  = "\n".join([t["description"] for t in triggers])
     note_vmr      = ""
     if tarification and isinstance(tarification, dict):
-        note_vmr = (
-            f"\nGroupe VMR : {tarification.get('groupe_vmr','N/A')} "
-            f"({tarification.get('source_vmr','')}) — "
-            f"{tarification.get('justification_vmr','')}"
-        )
+        note_vmr = f"\nGroupe VMR : {tarification.get('groupe_vmr','N/A')} ({tarification.get('source_vmr','')}) — {tarification.get('justification_vmr','')}"
         if tarification.get("necessite_souscription_specialisee"):
             note_vmr += "\n⚠️ Ce véhicule nécessite une souscription spécialisée."
 
@@ -634,18 +1654,18 @@ Prime estimée   : {est.get('prime_annuelle', 'N/A')} $/an  ({est.get('prime_men
 Fourchette      : {est.get('fourchette_basse','N/A')} $ – {est.get('fourchette_haute','N/A')} $
 
 Règles de ton message :
-- Si REFUSE            : explique pourquoi sans être brutal, exprime de la compassion
+- Si REFUSE : explique pourquoi sans être brutal, exprime de la compassion
 - Si VERIFICATION_HUMAINE : explique que le dossier est en traitement humain (1-3 jours)
-- Si APPROUVE          : félicite et présente la prime clairement
+- Si APPROUVE : félicite et présente la prime clairement
 - Mentionne le groupe VMR et ce qu'il signifie si disponible
 - Sois concis (max 180 mots), professionnel et humain
 """
 
     resp_expl = openai_client.chat.completions.create(
-        model      = AZURE_OPENAI_DEPLOYMENT,
-        messages   = [{"role": "user", "content": prompt_explication}],
-        max_tokens = 350,
-        temperature= 0.4,
+        model     = AZURE_OPENAI_DEPLOYMENT,
+        messages  = [{"role": "user", "content": prompt_explication}],
+        max_tokens= 350,
+        temperature=0.4,
     )
     explication_client = resp_expl.choices[0].message.content
 
@@ -662,8 +1682,8 @@ Règles de ton message :
     t0 = time.time()
 
     demande_id = creer_demande(applicant, vehicle, evaluation)
-    evaluation["demande_id"]         = demande_id
-    evaluation["explication_client"] = explication_client
+    evaluation["demande_id"]          = demande_id
+    evaluation["explication_client"]  = explication_client
 
     pipeline_log.append(_etape(
         "sauvegarde_excel", "ok",
@@ -675,15 +1695,15 @@ Règles de ton message :
     _progress(f"✅ Pipeline terminé en {duree_totale_ms / 1000:.1f}s")
 
     return {
-        "statut"            : statut,
-        "score"             : score,
-        "profil"            : profil,
-        "evaluation"        : evaluation,
-        "tarification"      : tarification,
+        "statut"           : statut,
+        "score"            : score,
+        "profil"           : profil,
+        "evaluation"       : evaluation,
+        "tarification"     : tarification,
         "explication_client": explication_client,
-        "demande_id"        : demande_id,
-        "pipeline_log"      : pipeline_log,
-        "duree_totale_ms"   : duree_totale_ms,
+        "demande_id"       : demande_id,
+        "pipeline_log"     : pipeline_log,
+        "duree_totale_ms"  : duree_totale_ms,
     }
 
 
@@ -692,6 +1712,10 @@ Règles de ton message :
 # ==============================================================================
 
 async def _pipeline_analyse_employe(demande: dict) -> dict:
+    """
+    Pipeline simplifié pour l'analyse d'une demande par un employé.
+    Appelle agent_souscription → agent_analyse_employe.
+    """
     _, _, agent_analyse_employe, _ = _import_agents()
     return await agent_analyse_employe(demande)
 
@@ -701,6 +1725,7 @@ async def _pipeline_analyse_employe(demande: dict) -> dict:
 # ==============================================================================
 
 async def _pipeline_chatbot(question: str, historique: list) -> dict:
+    """Délègue au chatbot RAG."""
     _, _, _, agent_chatbot_assurance = _import_agents()
     return await agent_chatbot_assurance(question, historique)
 
@@ -733,7 +1758,9 @@ def orchestrer_evaluation(
 
 
 def orchestrer_analyse_employe(demande: dict) -> dict:
-    """Appelé depuis pages/2_Employe.py pour analyser une demande en attente."""
+    """
+    Appelé depuis pages/2_Employe.py pour analyser une demande en attente.
+    """
     def run():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -747,14 +1774,14 @@ def orchestrer_analyse_employe(demande: dict) -> dict:
 
 
 def orchestrer_chatbot(question: str, historique: list = None) -> dict:
-    """Appelé depuis n'importe quelle page pour le chatbot RAG."""
+    """
+    Appelé depuis n'importe quelle page pour le chatbot RAG.
+    """
     def run():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            return loop.run_until_complete(
-                _pipeline_chatbot(question, historique or [])
-            )
+            return loop.run_until_complete(_pipeline_chatbot(question, historique or []))
         finally:
             loop.close()
 
@@ -762,279 +1789,1510 @@ def orchestrer_chatbot(question: str, historique: list = None) -> dict:
         return ex.submit(run).result(timeout=60)
 
 
+FICHIER 14 : backend/indexer.py
 ================================================================================
-FICHIER 3 : backend/agents/agent_souscription.py  [REMPLACÉ]
+# ==============================================================================
+# FICHIER : backend/indexer.py
+# ROLE    : Indexation des PDFs regles assurance dans Azure AI Search
+# USAGE   : python -m backend.indexer
+# ==============================================================================
+
+import os, uuid
+from pypdf import PdfReader
+from azure.search.documents import SearchClient
+from azure.search.documents.indexes import SearchIndexClient
+from azure.search.documents.indexes.models import (
+    SearchIndex, SearchFieldDataType, SimpleField, SearchableField, SearchField,
+    VectorSearch, HnswAlgorithmConfiguration, VectorSearchProfile
+)
+from backend.config.settings import (
+    SEARCH_ENDPOINT, EMBEDDING_MODEL, INDEX_REGLES, DOSSIER_PDFS,
+    CHUNK_SIZE, CHUNK_OVERLAP, get_credential, get_openai_client
+)
+
+def index_existe(credential, index_name):
+    try:
+        SearchIndexClient(SEARCH_ENDPOINT, credential).get_index(index_name)
+        return True
+    except:
+        return False
+
+def get_embedding(openai_client, texte):
+    return openai_client.embeddings.create(input=texte, model=EMBEDDING_MODEL).data[0].embedding
+
+def chunker(texte, taille=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
+    mots, chunks, i = texte.split(), [], 0
+    while i < len(mots):
+        chunks.append(" ".join(mots[i:i+taille]))
+        i += taille - overlap
+    return chunks
+
+def creer_index(credential, index_name):
+    client = SearchIndexClient(SEARCH_ENDPOINT, credential)
+    fields = [
+        SimpleField(name="id",      type=SearchFieldDataType.String, key=True),
+        SearchableField(name="contenu", type=SearchFieldDataType.String),
+        SimpleField(name="fichier", type=SearchFieldDataType.String, filterable=True),
+        SimpleField(name="page",    type=SearchFieldDataType.Int32,  filterable=True),
+        SearchField(name="embedding", type=SearchFieldDataType.Collection(SearchFieldDataType.Single),
+                    searchable=True, vector_search_dimensions=1536, vector_search_profile_name="profil"),
+    ]
+    vs = VectorSearch(
+        algorithms=[HnswAlgorithmConfiguration(name="hnsw")],
+        profiles=[VectorSearchProfile(name="profil", algorithm_configuration_name="hnsw")]
+    )
+    client.create_or_update_index(SearchIndex(name=index_name, fields=fields, vector_search=vs))
+    print(f"Index '{index_name}' cree !")
+
+def indexer_pdfs(credential, openai_client, dossier, index_name):
+    if not os.path.exists(dossier):
+        os.makedirs(dossier)
+        print(f"Dossier '{dossier}' cree.")
+        return 0, 0
+    sc   = SearchClient(SEARCH_ENDPOINT, index_name, credential)
+    docs = []
+    pdfs = [f for f in os.listdir(dossier) if f.endswith(".pdf")]
+    if not pdfs:
+        print("Aucun PDF trouve.")
+        return 0, 0
+    for f in pdfs:
+        print(f"Traitement : {f}")
+        reader = PdfReader(f"{dossier}/{f}")
+        for num, page in enumerate(reader.pages):
+            texte = page.extract_text()
+            if not texte: continue
+            for chunk in chunker(texte):
+                docs.append({"id": str(uuid.uuid4()), "contenu": chunk, "fichier": f,
+                              "page": num+1, "embedding": get_embedding(openai_client, chunk)})
+    sc.upload_documents(docs)
+    print(f"{len(docs)} chunks indexes !")
+    return len(docs), len(pdfs)
+
+if __name__ == "__main__":
+    cred = get_credential()
+    oai  = get_openai_client()
+    if index_existe(cred, INDEX_REGLES):
+        print(f"Index '{INDEX_REGLES}' existe deja.")
+    else:
+        creer_index(cred, INDEX_REGLES)
+        indexer_pdfs(cred, oai, DOSSIER_PDFS, INDEX_REGLES)
+    print("Termine !")
+================================================================================
+FICHIER 15 : frontend/styles/client_css.py
 ================================================================================
 # ==============================================================================
-# FICHIER : backend/agents/agent_souscription.py  (VERSION MISE À JOUR)
-# ROLE    : Agent d'explication et d'analyse des demandes d'assurance.
-#           La tarification est maintenant déléguée à agent_tarification.py.
-#           Le pipeline complet passe par orchestrateur.py.
-#
-# CHANGEMENTS vs version initiale :
-#   - agent_evaluer_demande() : retire calculer_estimation() hardcodée,
-#     l'estimation VMR est injectée par l'orchestrateur.
-#   - Reste en place pour générer les explications client et employé.
+# FICHIER : frontend/styles/client_css.py
+# ROLE    : CSS de la page client — style professionnel/corporatif bleu
 # ==============================================================================
 
-import asyncio
-import concurrent.futures
-from backend.config.settings import AZURE_OPENAI_DEPLOYMENT, get_openai_client
-from backend.rules.decisions import evaluer_demande
-from backend.utils.csv_handler import get_vehicules_client, get_conducteurs_additionnels
-from backend.utils.demandes_excel import creer_demande
+CLIENT_CSS = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Playfair+Display:wght@700&display=swap');
 
+:root {
+  --bg:           #f8fafc;
+  --surface:      #ffffff;
+  --surface2:     #f1f5f9;
+  --border:       #e2e8f0;
+  --border2:      #cbd5e1;
+  --text:         #0f172a;
+  --text2:        #475569;
+  --text3:        #94a3b8;
+  --accent:       #1e40af;
+  --accent-mid:   #2563eb;
+  --accent-light: #3b82f6;
+  --accent-bg:    #eff6ff;
+  --accent-bd:    #bfdbfe;
+  --green:        #15803d;
+  --green-bg:     #f0fdf4;
+  --green-bd:     #bbf7d0;
+  --amber:        #b45309;
+  --amber-bg:     #fffbeb;
+  --amber-bd:     #fde68a;
+  --red:          #b91c1c;
+  --red-bg:       #fef2f2;
+  --red-bd:       #fecaca;
+  --r-sm: 6px; --r-md: 10px; --r-lg: 14px; --r-xl: 20px;
+  --font-h: 'Playfair Display', Georgia, serif;
+  --font-b: 'Inter', sans-serif;
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.06);
+  --shadow-md: 0 4px 16px rgba(0,0,0,0.08);
+  --shadow-lg: 0 10px 40px rgba(0,0,0,0.1);
+}
 
-# ==============================================================================
-# AGENT : Évaluation d'une demande (async)
-# NOTE  : Dans le nouveau pipeline, cet agent est appelé via orchestrateur.py
-#         qui injecte la tarification VMR avant de générer l'explication.
-#         Cet agent reste disponible en standalone pour la compatibilité.
-# ==============================================================================
-async def agent_evaluer_demande(applicant: dict, vehicle_data: dict) -> dict:
-    """
-    Évalue une demande d'assurance et génère une explication GPT.
-    ⚠️ En standalone, l'estimation tarifaire sera absente (pas de VMR).
-       Préférer orchestrateur.orchestrer_evaluation() pour le pipeline complet.
-    """
-    openai_client = get_openai_client()
+html, body, [class*="css"] {
+  font-family: var(--font-b) !important;
+  background-color: var(--bg) !important;
+  color: var(--text) !important;
+}
+section[data-testid="stSidebar"] { display: none !important; }
+#MainMenu {visibility:hidden;} footer {visibility:hidden;} header {visibility:hidden;}
 
-    additional_drivers = get_conducteurs_additionnels(str(applicant.get("applicant_id", "")))
-    evaluation         = evaluer_demande(applicant, vehicle_data, additional_drivers)
-    demande_id         = creer_demande(applicant, vehicle_data, evaluation)
-    evaluation["demande_id"] = demande_id
+.stButton button {
+  background: var(--accent) !important;
+  color: #fff !important;
+  border: none !important;
+  border-radius: var(--r-md) !important;
+  font-family: var(--font-b) !important;
+  font-weight: 600 !important;
+  font-size: 14px !important;
+  padding: 10px 20px !important;
+  transition: all 0.2s !important;
+}
+.stButton button:hover {
+  background: #1d3a9e !important;
+  transform: translateY(-1px) !important;
+  box-shadow: 0 4px 12px rgba(30,64,175,0.3) !important;
+}
+.stTextInput input, .stTextArea textarea, .stSelectbox > div {
+  background: var(--surface) !important;
+  border: 1.5px solid var(--border2) !important;
+  border-radius: var(--r-md) !important;
+  color: var(--text) !important;
+  font-family: var(--font-b) !important;
+  font-size: 14px !important;
+}
+.stTextInput input:focus, .stTextArea textarea:focus {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 3px rgba(30,64,175,0.1) !important;
+}
+.stTabs [data-baseweb="tab-list"] {
+  background: var(--surface2) !important;
+  border-radius: var(--r-lg) !important;
+  padding: 4px !important;
+}
+.stTabs [data-baseweb="tab"] {
+  color: var(--text2) !important;
+  font-family: var(--font-b) !important;
+  font-weight: 500 !important;
+  border-radius: var(--r-md) !important;
+}
+.stTabs [aria-selected="true"] {
+  background: var(--surface) !important;
+  color: var(--accent) !important;
+  font-weight: 600 !important;
+}
+hr { border-color: var(--border) !important; }
 
-    statut   = evaluation["statut"]
-    score    = evaluation["score"]
-    details  = "\n".join(evaluation.get("details", []))
-    triggers = "\n".join([t["description"] for t in evaluation.get("triggers", [])])
-    est      = evaluation.get("estimation") or {}
+/* ── Navbar ── */
+.cl-navbar {
+  background: var(--accent);
+  padding: 0 2rem;
+  height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0;
+  box-shadow: var(--shadow-md);
+}
+.cl-nav-brand { font-family: var(--font-h); font-size: 1.4rem; color: #fff; letter-spacing: -0.3px; }
+.cl-nav-links { display: flex; gap: 20px; }
+.cl-nav-link  { color: rgba(255,255,255,0.8); font-size: 13.5px; font-weight: 500; text-decoration: none; transition: color 0.15s; }
+.cl-nav-link:hover  { color: #fff; }
+.cl-nav-link.active { color: #fff; border-bottom: 2px solid rgba(255,255,255,0.8); padding-bottom: 2px; }
+.cl-nav-user { display: flex; align-items: center; gap: 10px; color: rgba(255,255,255,0.9); font-size: 13px; }
+.cl-nav-avatar { width: 32px; height: 32px; border-radius: 50%; background: rgba(255,255,255,0.2); display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 600; color: #fff; }
 
-    prompt = f"""
-Tu es un agent d'assurance automobile de Desjardins.
-Explique au client le résultat de son évaluation d'assurance de façon claire et professionnelle en français.
+/* ── Hero login ── */
+.cl-login-wrap { max-width: 440px; margin: 4rem auto; }
+.cl-login-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-xl); padding: 2.5rem; box-shadow: var(--shadow-lg); }
+.cl-login-logo { width: 52px; height: 52px; background: var(--accent); border-radius: var(--r-lg); display: flex; align-items: center; justify-content: center; font-size: 24px; margin: 0 auto 1.2rem; }
+.cl-login-title { font-family: var(--font-h); font-size: 1.6rem; color: var(--text); text-align: center; margin-bottom: 0.4rem; }
+.cl-login-sub   { font-size: 13.5px; color: var(--text3); text-align: center; margin-bottom: 1.8rem; }
 
-Statut          : {statut}
-Score de risque : {score}/12
-Détails calcul  : {details}
-Triggers        : {triggers or 'aucun'}
-Prime estimée   : {est.get('prime_annuelle', 'N/A')}$ / an
+/* ── Hero page client ── */
+.cl-hero { background: linear-gradient(135deg, #1e3a8a, #2563eb); border-radius: var(--r-xl); padding: 2rem 2.5rem; margin-bottom: 1.5rem; color: #fff; }
+.cl-hero-welcome { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 1.5px; opacity: 0.8; margin-bottom: 6px; }
+.cl-hero-name    { font-family: var(--font-h); font-size: 1.8rem; margin-bottom: 0.5rem; }
+.cl-hero-desc    { font-size: 13.5px; opacity: 0.85; }
 
-Règles :
-- Si REFUSE            : explique pourquoi sans être brutal, exprime de la compassion
-- Si VERIFICATION_HUMAINE : explique que la demande est en cours de traitement (1-3 jours ouvrables)
-- Si APPROUVE          : félicite et donne les détails de la prime
-- Sois concis (max 150 mots), professionnel et humain.
+/* ── Statut badges ── */
+.cl-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 600; padding: 4px 12px; border-radius: 99px; }
+.cl-badge.bleu    { background: var(--accent-bg); color: var(--accent);  border: 1px solid var(--accent-bd); }
+.cl-badge.vert    { background: var(--green-bg);  color: var(--green);   border: 1px solid var(--green-bd); }
+.cl-badge.orange  { background: var(--amber-bg);  color: var(--amber);   border: 1px solid var(--amber-bd); }
+.cl-badge.rouge   { background: var(--red-bg);    color: var(--red);     border: 1px solid var(--red-bd); }
+
+/* ── Cards ── */
+.cl-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 1.5rem; margin-bottom: 1rem; box-shadow: var(--shadow-sm); }
+.cl-card-title { font-size: 15px; font-weight: 600; color: var(--text); margin-bottom: 1rem; display: flex; align-items: center; gap: 8px; }
+.cl-sec-title  { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: var(--text3); margin-bottom: 8px; }
+
+/* ── Chat ── */
+.cl-chat-panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-xl); overflow: hidden; box-shadow: var(--shadow-sm); }
+.cl-chat-head  { background: var(--accent); padding: 14px 18px; display: flex; align-items: center; gap: 12px; }
+.cl-chat-head-av { width: 36px; height: 36px; background: rgba(255,255,255,0.2); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 18px; }
+.cl-chat-head-name   { font-size: 14px; font-weight: 600; color: #fff; }
+.cl-chat-head-status { font-size: 11px; color: rgba(255,255,255,0.75); }
+.cl-chat-msgs  { padding: 16px; min-height: 300px; max-height: 420px; overflow-y: auto; background: var(--bg); display: flex; flex-direction: column; gap: 12px; }
+.cl-msg        { display: flex; align-items: flex-end; gap: 8px; }
+.cl-msg.user   { flex-direction: row-reverse; }
+.cl-msg-av     { width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; flex-shrink: 0; }
+.cl-msg-av.bot { background: var(--accent); color: #fff; }
+.cl-msg-av.usr { background: var(--surface2); color: var(--text2); border: 1px solid var(--border); }
+.cl-bubble     { max-width: 78%; font-size: 13.5px; line-height: 1.6; padding: 10px 14px; border-radius: 16px; }
+.cl-msg.bot .cl-bubble { background: var(--surface); border: 1px solid var(--border); border-bottom-left-radius: 4px; color: var(--text); }
+.cl-msg.user .cl-bubble { background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
+
+/* ── Demande card ── */
+.cl-demande-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 1.2rem 1.5rem; margin-bottom: 0.75rem; display: flex; align-items: center; justify-content: space-between; box-shadow: var(--shadow-sm); transition: box-shadow 0.2s; }
+.cl-demande-card:hover { box-shadow: var(--shadow-md); }
+.cl-demande-id   { font-size: 12px; color: var(--text3); font-family: monospace; }
+.cl-demande-veh  { font-size: 14px; font-weight: 600; color: var(--text); margin: 3px 0; }
+.cl-demande-date { font-size: 12px; color: var(--text3); }
+
+/* ── Notif ── */
+.cl-notif { border-radius: var(--r-md); padding: 0.75rem 1rem; margin-bottom: 0.75rem; font-size: 13px; border-left: 3px solid; display: flex; align-items: flex-start; gap: 10px; }
+.cl-notif.info    { background: var(--accent-bg); border-color: var(--accent-light); color: var(--accent); }
+.cl-notif.success { background: var(--green-bg);  border-color: var(--green);        color: var(--green); }
+.cl-notif.warn    { background: var(--amber-bg);  border-color: var(--amber);        color: var(--amber); }
+.cl-notif.error   { background: var(--red-bg);    border-color: var(--red);          color: var(--red); }
+
+/* ── Estimation ── */
+.cl-estimation { background: linear-gradient(135deg, #1e3a8a, #1e40af); border-radius: var(--r-xl); padding: 1.8rem 2rem; color: #fff; text-align: center; }
+.cl-est-label  { font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; opacity: 0.75; margin-bottom: 6px; }
+.cl-est-val    { font-family: var(--font-h); font-size: 2.8rem; font-weight: 700; line-height: 1; }
+.cl-est-sub    { font-size: 13px; opacity: 0.8; margin-top: 6px; }
+
+/* ── Form ── */
+.cl-form-section { background: var(--surface2); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 1.2rem 1.5rem; margin-bottom: 1rem; }
+.cl-form-title   { font-size: 14px; font-weight: 600; color: var(--text); margin-bottom: 1rem; }
+
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: var(--surface2); }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 99px; }
+</style>
 """
 
-    response = openai_client.chat.completions.create(
-        model=AZURE_OPENAI_DEPLOYMENT,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=300,
-        temperature=0.4,
-    )
-
-    evaluation["explication_client"] = response.choices[0].message.content
-    return evaluation
-
-
+================================================================================
+FICHIER 16 : frontend/styles/employe_dev_css.py
+================================================================================
 # ==============================================================================
-# AGENT : Analyse employé (async)
-# Utilisé par orchestrateur.orchestrer_analyse_employe()
+# FICHIER : frontend/styles/employe_dev_css.py
+# ROLE    : CSS pages Employe et Developpeur
 # ==============================================================================
-async def agent_analyse_employe(demande: dict) -> dict:
-    """
-    Analyse une demande pour aider l'employé à prendre une décision.
-    Tient compte de la tarification VMR si disponible dans la demande.
-    """
-    openai_client = get_openai_client()
 
-    vmr_context = ""
-    if demande.get("groupe_vmr"):
-        vmr_context = f"""
-- Groupe VMR          : {demande.get('groupe_vmr')} (source : {demande.get('source_vmr','N/A')})
-- Justification VMR   : {demande.get('justification_vmr','')}
-- Souscription spéc.  : {demande.get('necessite_souscription_specialisee', False)}"""
+EMPLOYE_CSS = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+:root {
+  --bg:#f8fafc; --surface:#fff; --surface2:#f1f5f9;
+  --border:#e2e8f0; --border2:#cbd5e1;
+  --text:#0f172a; --text2:#475569; --text3:#94a3b8;
+  --accent:#7c3aed; --accent-bg:#f5f3ff; --accent-bd:#ddd6fe;
+  --green:#15803d; --green-bg:#f0fdf4; --green-bd:#bbf7d0;
+  --amber:#b45309; --amber-bg:#fffbeb; --amber-bd:#fde68a;
+  --red:#b91c1c; --red-bg:#fef2f2; --red-bd:#fecaca;
+  --blue:#1e40af; --blue-bg:#eff6ff; --blue-bd:#bfdbfe;
+  --r-sm:6px; --r-md:10px; --r-lg:14px; --r-xl:20px;
+  --font-b:'Inter',sans-serif;
+  --shadow-sm:0 1px 3px rgba(0,0,0,0.06);
+  --shadow-md:0 4px 16px rgba(0,0,0,0.08);
+}
+html, body, [class*="css"] { font-family:var(--font-b) !important; background-color:var(--bg) !important; color:var(--text) !important; }
+section[data-testid="stSidebar"] { background:var(--surface) !important; border-right:1px solid var(--border) !important; }
+#MainMenu {visibility:hidden;} footer {visibility:hidden;} header {visibility:hidden;}
 
-    prompt = f"""Tu es un souscripteur senior chez Desjardins Assurances.
-Analyse cette demande d'assurance et donne une recommandation claire à l'employé.
+.stButton button { background:var(--accent) !important; color:#fff !important; border:none !important; border-radius:var(--r-md) !important; font-family:var(--font-b) !important; font-weight:600 !important; font-size:13px !important; transition:all 0.2s !important; }
+.stButton button:hover { opacity:0.9 !important; transform:translateY(-1px) !important; }
+.stTextInput input, .stTextArea textarea { background:var(--surface) !important; border:1.5px solid var(--border2) !important; border-radius:var(--r-md) !important; color:var(--text) !important; font-family:var(--font-b) !important; }
+.stTabs [data-baseweb="tab-list"] { background:var(--surface2) !important; border-radius:var(--r-lg) !important; padding:4px !important; }
+.stTabs [data-baseweb="tab"] { color:var(--text2) !important; font-family:var(--font-b) !important; font-weight:500 !important; border-radius:var(--r-md) !important; }
+.stTabs [aria-selected="true"] { background:var(--surface) !important; color:var(--accent) !important; font-weight:600 !important; }
+hr { border-color:var(--border) !important; }
 
-Informations demande :
-- Client            : {demande.get('first_name')} {demande.get('last_name')}
-- Véhicule          : {demande.get('vehicle_year')} {demande.get('vehicle_make')} {demande.get('vehicle_model')}
-- Valeur véhicule   : {demande.get('vehicle_value')}$
-- Score risque      : {demande.get('score_risque')}
-- Profil conducteur : {demande.get('profil_conducteur')}{vmr_context}
-- Triggers          : {demande.get('triggers')}
-- Prime estimée     : {demande.get('prime_annuelle')}$/an  ({demande.get('prime_mensuelle')}$/mois)
+.em-navbar { background:var(--accent); padding:0 2rem; height:58px; display:flex; align-items:center; justify-content:space-between; box-shadow:var(--shadow-md); margin-bottom:1.5rem; }
+.em-nav-brand { font-size:1.1rem; font-weight:700; color:#fff; letter-spacing:-0.3px; }
+.em-nav-links { display:flex; gap:6px; }
+.em-nav-link  { color:rgba(255,255,255,0.75); font-size:13px; font-weight:500; text-decoration:none; padding:6px 14px; border-radius:var(--r-md); transition:all 0.15s; }
+.em-nav-link:hover  { background:rgba(255,255,255,0.15); color:#fff; }
+.em-nav-link.active { background:rgba(255,255,255,0.2); color:#fff; }
 
-Fournis :
-1. Analyse du risque (2-3 phrases)
-2. Points d'attention spécifiques (VMR, triggers, profil)
-3. Recommandation : APPROUVER / REFUSER + justification courte
+.em-badge { display:inline-flex; align-items:center; gap:4px; font-size:11px; font-weight:600; padding:3px 10px; border-radius:99px; }
+.em-badge.vert   { background:var(--green-bg);  color:var(--green);  border:1px solid var(--green-bd); }
+.em-badge.rouge  { background:var(--red-bg);    color:var(--red);    border:1px solid var(--red-bd); }
+.em-badge.orange { background:var(--amber-bg);  color:var(--amber);  border:1px solid var(--amber-bd); }
+.em-badge.bleu   { background:var(--blue-bg);   color:var(--blue);   border:1px solid var(--blue-bd); }
+
+.em-card { background:var(--surface); border:1px solid var(--border); border-radius:var(--r-lg); padding:1.2rem 1.5rem; margin-bottom:0.75rem; box-shadow:var(--shadow-sm); }
+.em-card:hover { box-shadow:var(--shadow-md); }
+.em-card-title { font-size:14px; font-weight:600; color:var(--text); margin-bottom:0.75rem; }
+.em-sec-title  { font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text3); margin-bottom:8px; }
+
+.em-notif { border-radius:var(--r-md); padding:0.65rem 1rem; margin-bottom:0.5rem; font-size:13px; border-left:3px solid; }
+.em-notif.success { background:var(--green-bg); border-color:var(--green); color:var(--green); }
+.em-notif.error   { background:var(--red-bg);   border-color:var(--red);   color:var(--red); }
+.em-notif.warn    { background:var(--amber-bg);  border-color:var(--amber); color:var(--amber); }
+
+.em-kpi-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:1.5rem; }
+.em-kpi      { background:var(--surface); border:1px solid var(--border); border-radius:var(--r-lg); padding:1.2rem; text-align:center; box-shadow:var(--shadow-sm); }
+.em-kpi-val  { font-size:2rem; font-weight:700; color:var(--text); letter-spacing:-1px; line-height:1; }
+.em-kpi-lbl  { font-size:11px; color:var(--text3); text-transform:uppercase; letter-spacing:0.5px; margin-top:4px; }
+
+.em-analyse-box { background:var(--accent-bg); border:1px solid var(--accent-bd); border-radius:var(--r-lg); padding:1.2rem 1.5rem; font-size:13.5px; color:var(--text); line-height:1.7; }
+
+::-webkit-scrollbar { width:5px; }
+::-webkit-scrollbar-track { background:var(--surface2); }
+::-webkit-scrollbar-thumb { background:var(--border2); border-radius:99px; }
+</style>
 """
 
-    response = openai_client.chat.completions.create(
-        model=AZURE_OPENAI_DEPLOYMENT,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=400,
-        temperature=0.3,
-    )
+DEV_CSS = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
+:root {
+  --bg:#0f172a; --surface:#1e293b; --surface2:#334155;
+  --border:#334155; --border2:#475569;
+  --text:#f1f5f9; --text2:#94a3b8; --text3:#64748b;
+  --accent:#38bdf8; --accent-bg:rgba(56,189,248,0.1); --accent-bd:rgba(56,189,248,0.3);
+  --green:#4ade80; --green-bg:rgba(74,222,128,0.1); --green-bd:rgba(74,222,128,0.3);
+  --amber:#fbbf24; --amber-bg:rgba(251,191,36,0.1); --amber-bd:rgba(251,191,36,0.3);
+  --red:#f87171; --red-bg:rgba(248,113,113,0.1); --red-bd:rgba(248,113,113,0.3);
+  --r-sm:6px; --r-md:10px; --r-lg:14px; --r-xl:20px;
+  --font-b:'Inter',sans-serif; --font-m:'JetBrains Mono',monospace;
+  --shadow-sm:0 1px 3px rgba(0,0,0,0.3);
+}
+html, body, [class*="css"] { font-family:var(--font-b) !important; background-color:var(--bg) !important; color:var(--text) !important; }
+section[data-testid="stSidebar"] { background:var(--surface) !important; border-right:1px solid var(--border) !important; }
+#MainMenu {visibility:hidden;} footer {visibility:hidden;} header {visibility:hidden;}
 
-    return {
-        "analyse_employe": response.choices[0].message.content,
-        "demande_id"     : demande.get("demande_id", ""),
-    }
+.stButton button { background:var(--accent) !important; color:#0f172a !important; border:none !important; border-radius:var(--r-md) !important; font-family:var(--font-b) !important; font-weight:700 !important; font-size:13px !important; }
+.stTextInput input, .stTextArea textarea { background:var(--surface) !important; border:1px solid var(--border2) !important; border-radius:var(--r-md) !important; color:var(--text) !important; font-family:var(--font-m) !important; }
+.stTabs [data-baseweb="tab-list"] { background:var(--surface) !important; border-radius:var(--r-lg) !important; padding:4px !important; }
+.stTabs [data-baseweb="tab"] { color:var(--text2) !important; font-family:var(--font-b) !important; font-weight:500 !important; }
+.stTabs [aria-selected="true"] { background:var(--surface2) !important; color:var(--accent) !important; }
+hr { border-color:var(--border) !important; }
 
+.dv-navbar { background:var(--surface); border-bottom:1px solid var(--border); padding:0 2rem; height:56px; display:flex; align-items:center; justify-content:space-between; margin-bottom:1.5rem; }
+.dv-brand  { font-family:var(--font-m); font-size:14px; color:var(--accent); font-weight:600; }
+.dv-nav-links { display:flex; gap:6px; }
+.dv-nav-link  { color:var(--text2); font-size:12.5px; font-weight:500; text-decoration:none; padding:5px 12px; border-radius:var(--r-md); transition:all 0.15s; font-family:var(--font-b); }
+.dv-nav-link:hover  { background:var(--surface2); color:var(--text); }
+.dv-nav-link.active { background:var(--accent-bg); color:var(--accent); }
 
-# ==============================================================================
-# WRAPPERS SYNCHRONES (compatibilité — préférer orchestrateur pour le pipeline)
-# ==============================================================================
+.dv-badge { display:inline-flex; align-items:center; gap:4px; font-size:10.5px; font-weight:600; padding:3px 10px; border-radius:99px; font-family:var(--font-m); }
+.dv-badge.green  { background:var(--green-bg); color:var(--green); border:1px solid var(--green-bd); }
+.dv-badge.red    { background:var(--red-bg);   color:var(--red);   border:1px solid var(--red-bd); }
+.dv-badge.blue   { background:var(--accent-bg); color:var(--accent); border:1px solid var(--accent-bd); }
 
-def evaluer_demande_sync(applicant: dict, vehicle_data: dict) -> dict:
-    """
-    ⚠️ LEGACY — Pour le pipeline complet avec VMR, utiliser :
-       from backend.agents.orchestrateur import orchestrer_evaluation
-    """
-    def run():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            return loop.run_until_complete(agent_evaluer_demande(applicant, vehicle_data))
-        finally:
-            loop.close()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-        return ex.submit(run).result(timeout=120)
+.dv-card { background:var(--surface); border:1px solid var(--border); border-radius:var(--r-lg); padding:1.2rem 1.5rem; margin-bottom:1rem; }
+.dv-sec-title { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:1.5px; color:var(--text3); margin-bottom:8px; font-family:var(--font-m); }
 
+.dv-score-card { background:var(--surface2); border:1px solid var(--border2); border-radius:var(--r-md); padding:1rem; text-align:center; }
+.dv-score-val  { font-family:var(--font-m); font-size:1.8rem; font-weight:700; }
+.dv-score-lbl  { font-size:10px; color:var(--text3); text-transform:uppercase; letter-spacing:0.5px; margin-top:3px; }
+.dv-score-bar  { height:5px; background:var(--border2); border-radius:99px; margin-top:8px; overflow:hidden; }
+.dv-score-fill { height:100%; border-radius:99px; }
 
-def analyser_demande_employe_sync(demande: dict) -> dict:
-    """Wrapper synchrone pour l'analyse employé (inchangé)."""
-    def run():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            return loop.run_until_complete(agent_analyse_employe(demande))
-        finally:
-            loop.close()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-        return ex.submit(run).result(timeout=120)
+.dv-kpi-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-bottom:1.5rem; }
+.dv-kpi      { background:var(--surface); border:1px solid var(--border); border-radius:var(--r-lg); padding:1rem; text-align:center; }
+.dv-kpi-val  { font-family:var(--font-m); font-size:1.6rem; font-weight:700; color:var(--accent); }
+.dv-kpi-lbl  { font-size:10px; color:var(--text3); text-transform:uppercase; letter-spacing:0.5px; margin-top:3px; }
 
+.dv-notif { border-radius:var(--r-md); padding:0.6rem 1rem; margin-bottom:0.5rem; font-size:12.5px; border-left:3px solid; font-family:var(--font-m); }
+.dv-notif.success { background:var(--green-bg); border-color:var(--green); color:var(--green); }
+.dv-notif.error   { background:var(--red-bg);   border-color:var(--red);   color:var(--red); }
+.dv-notif.info    { background:var(--accent-bg); border-color:var(--accent); color:var(--accent); }
+
+::-webkit-scrollbar { width:5px; }
+::-webkit-scrollbar-track { background:var(--surface); }
+::-webkit-scrollbar-thumb { background:var(--border2); border-radius:99px; }
+</style>
+"""
 
 ================================================================================
-FICHIER 4 : GUIDE D'INTÉGRATION
+FICHIER 17 : pages/1_Client.py  [⚠️ VOIR NOTE CI-DESSOUS — passer à orchestrer_evaluation]
+================================================================================
+# ==============================================================================
+# FICHIER : pages/1_Client.py
+# ROLE    : Page principale client — login, chatbot, demande, statut
+# ==============================================================================
+
+import streamlit as st
+import time
+from datetime import datetime
+
+from backend.utils.csv_handler      import verifier_login, get_vehicules_client, get_conducteurs_additionnels
+from backend.agents.agent_rag       import chatbot_assurance
+from backend.agents.agent_souscription import evaluer_demande_sync
+from backend.utils.demandes_excel   import lire_demandes_client
+from frontend.styles.client_css     import CLIENT_CSS
+from backend.config.settings        import COMPANY_NAME if hasattr(__import__('backend.config.settings', fromlist=['COMPANY_NAME']), 'COMPANY_NAME') else None
+
+COMPANY = "Desjardins Assurances"
+
+st.set_page_config(page_title=f"{COMPANY} — Espace Client", page_icon="🚗", layout="wide", initial_sidebar_state="collapsed")
+st.markdown(CLIENT_CSS, unsafe_allow_html=True)
+
+# ── Session state ──────────────────────────────────────────────────
+if "client"          not in st.session_state: st.session_state.client      = None
+if "chat_history"    not in st.session_state: st.session_state.chat_history = []
+if "page_active"     not in st.session_state: st.session_state.page_active  = "accueil"
+if "notifs"          not in st.session_state: st.session_state.notifs       = []
+if "vehicule_choisi" not in st.session_state: st.session_state.vehicule_choisi = None
+if "evaluation"      not in st.session_state: st.session_state.evaluation   = None
+
+def add_notif(msg, kind="info"):
+    st.session_state.notifs.append({"msg": msg, "kind": kind})
+    if len(st.session_state.notifs) > 3: st.session_state.notifs.pop(0)
+
+# ==============================================================================
+# PAGE LOGIN
+# ==============================================================================
+if st.session_state.client is None:
+    st.markdown(f"""
+    <div style="background:var(--accent);padding:0 2rem;height:64px;display:flex;align-items:center;margin-bottom:2rem;box-shadow:var(--shadow-md)">
+      <span style="font-size:1.3rem;font-weight:700;color:#fff;font-family:var(--font-h)">🚗 {COMPANY}</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col_c = st.columns([1, 1.2, 1])[1]
+    with col_c:
+        st.markdown("""
+        <div class="cl-login-card">
+          <div class="cl-login-logo">🔐</div>
+          <div class="cl-login-title">Espace Client</div>
+          <div class="cl-login-sub">Connectez-vous pour accéder à vos assurances</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        with st.form("login_form"):
+            applicant_id = st.text_input("Numéro de client (applicant_id)", placeholder="Ex: APP001")
+            postal_code  = st.text_input("Code postal", placeholder="Ex: H3A 1B1")
+            submitted    = st.form_submit_button("Se connecter", use_container_width=True)
+
+        if submitted:
+            with st.spinner("Vérification..."):
+                result = verifier_login(applicant_id.strip(), postal_code.strip())
+                if result["success"]:
+                    st.session_state.client     = result["client"]
+                    st.session_state.page_active = "accueil"
+                    st.rerun()
+                else:
+                    st.error(result["message"])
+    st.stop()
+
+# ==============================================================================
+# CLIENT CONNECTE — NAVBAR
+# ==============================================================================
+client = st.session_state.client
+prenom = client.get("first_name", "Client")
+nom    = client.get("last_name", "")
+
+pages = [
+    ("accueil",  "🏠 Accueil"),
+    ("chatbot",  "💬 Questions"),
+    ("demande",  "📋 Nouvelle demande"),
+    ("statut",   "📊 Mes demandes"),
+]
+
+liens = "".join([
+    f'<a href="#" class="cl-nav-link {"active" if st.session_state.page_active == p else ""}" onclick="return false;">{l}</a>'
+    for p, l in pages
+])
+
+st.markdown(f"""
+<div class="cl-navbar">
+  <span class="cl-nav-brand">🚗 {COMPANY}</span>
+  <div class="cl-nav-links">{liens}</div>
+  <div class="cl-nav-user">
+    <div class="cl-nav-avatar">{prenom[0]}{nom[0] if nom else ""}</div>
+    <span>{prenom} {nom}</span>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+# Navigation par boutons (Streamlit ne supporte pas les hrefs dynamiques)
+col_nav = st.columns(len(pages))
+for i, (p, l) in enumerate(pages):
+    with col_nav[i]:
+        if st.button(l, use_container_width=True, key=f"nav_{p}"):
+            st.session_state.page_active = p
+            st.rerun()
+
+# Notifications
+for n in st.session_state.notifs:
+    st.markdown(f'<div class="cl-notif {n["kind"]}">{n["msg"]}</div>', unsafe_allow_html=True)
+
+st.markdown("---")
+
+# ==============================================================================
+# PAGE ACCUEIL
+# ==============================================================================
+if st.session_state.page_active == "accueil":
+    st.markdown(f"""
+    <div class="cl-hero">
+      <div class="cl-hero-welcome">Bienvenue</div>
+      <div class="cl-hero-name">{prenom} {nom}</div>
+      <div class="cl-hero-desc">
+        Gérez vos assurances automobiles · {client.get("city","")}, {client.get("province","")}
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col1, col2, col3 = st.columns(3)
+    demandes = lire_demandes_client(str(client.get("applicant_id","")))
+
+    with col1:
+        nb_dem = len(demandes)
+        st.markdown(f"""
+        <div class="cl-card" style="text-align:center">
+          <div style="font-size:2rem;margin-bottom:6px">📋</div>
+          <div style="font-size:1.6rem;font-weight:700;color:var(--accent)">{nb_dem}</div>
+          <div style="font-size:12px;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px">Demandes total</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col2:
+        nb_att = len([d for d in demandes if d.get("statut") == "VERIFICATION_HUMAINE"])
+        st.markdown(f"""
+        <div class="cl-card" style="text-align:center">
+          <div style="font-size:2rem;margin-bottom:6px">⏳</div>
+          <div style="font-size:1.6rem;font-weight:700;color:var(--amber)">{nb_att}</div>
+          <div style="font-size:12px;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px">En attente</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col3:
+        nb_app = len([d for d in demandes if d.get("statut") == "APPROUVE"])
+        st.markdown(f"""
+        <div class="cl-card" style="text-align:center">
+          <div style="font-size:2rem;margin-bottom:6px">✅</div>
+          <div style="font-size:1.6rem;font-weight:700;color:var(--green)">{nb_app}</div>
+          <div style="font-size:12px;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px">Approuvées</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown('<p class="cl-sec-title" style="margin-top:1.5rem">Actions rapides</p>', unsafe_allow_html=True)
+    col_a, col_b = st.columns(2)
+    with col_a:
+        if st.button("💬 Poser une question sur les règles", use_container_width=True):
+            st.session_state.page_active = "chatbot"; st.rerun()
+    with col_b:
+        if st.button("📋 Soumettre une nouvelle demande", use_container_width=True):
+            st.session_state.page_active = "demande"; st.rerun()
+
+    if st.button("🚪 Se déconnecter"):
+        for k in list(st.session_state.keys()): del st.session_state[k]
+        st.rerun()
+
+# ==============================================================================
+# PAGE CHATBOT
+# ==============================================================================
+elif st.session_state.page_active == "chatbot":
+    st.markdown('<p class="cl-sec-title">Assistant assurance automobile</p>', unsafe_allow_html=True)
+
+    st.markdown("""
+    <div class="cl-chat-panel">
+      <div class="cl-chat-head">
+        <div class="cl-chat-head-av">🤖</div>
+        <div>
+          <div class="cl-chat-head-name">Assistant Desjardins</div>
+          <div class="cl-chat-head-status">En ligne · Règles assurance auto</div>
+        </div>
+      </div>
+      <div class="cl-chat-msgs">
+    """, unsafe_allow_html=True)
+
+    if not st.session_state.chat_history:
+        st.markdown(f"""
+        <div class="cl-msg bot">
+          <div class="cl-msg-av bot">🤖</div>
+          <div class="cl-bubble">
+            Bonjour {prenom} ! Je suis votre assistant assurance automobile.<br><br>
+            Je peux vous aider à comprendre nos règles d'assurance, les conditions de couverture,
+            les facteurs qui influencent votre prime, et bien plus.<br><br>
+            Comment puis-je vous aider ?
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        for msg in st.session_state.chat_history[-8:]:
+            role_class = "user" if msg["role"] == "user" else "bot"
+            av = prenom[0] if msg["role"] == "user" else "🤖"
+            av_class = "usr" if msg["role"] == "user" else "bot"
+            st.markdown(f"""
+            <div class="cl-msg {role_class}">
+              <div class="cl-msg-av {av_class}">{av}</div>
+              <div class="cl-bubble">{msg["content"]}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+    st.markdown('</div></div>', unsafe_allow_html=True)
+
+    # Suggestions
+    suggestions = ["Qu'est-ce qui influence ma prime ?", "Qu'est-ce qu'un accident responsable ?", "Puis-je ajouter un conducteur ?"]
+    cols = st.columns(len(suggestions))
+    for i, s in enumerate(suggestions):
+        with cols[i]:
+            if st.button(s, use_container_width=True, key=f"sug_{i}"):
+                st.session_state._chat_send = s
+
+    with st.form("chat_form", clear_on_submit=True):
+        question = st.text_input("", placeholder="Posez votre question...", label_visibility="collapsed")
+        envoyer  = st.form_submit_button("Envoyer ➤", use_container_width=True)
+
+    msg_a_envoyer = None
+    if envoyer and question.strip():
+        msg_a_envoyer = question.strip()
+    elif hasattr(st.session_state, "_chat_send"):
+        msg_a_envoyer = st.session_state._chat_send
+        del st.session_state._chat_send
+
+    if msg_a_envoyer:
+        st.session_state.chat_history.append({"role": "user", "content": msg_a_envoyer})
+        with st.spinner("Recherche dans les règles..."):
+            try:
+                result = chatbot_assurance(msg_a_envoyer, st.session_state.chat_history[:-1])
+                st.session_state.chat_history.append({"role": "assistant", "content": result["reponse"]})
+            except Exception as e:
+                st.session_state.chat_history.append({"role": "assistant", "content": f"Désolé, une erreur s'est produite : {str(e)}"})
+        st.rerun()
+
+# ==============================================================================
+# PAGE NOUVELLE DEMANDE
+# ==============================================================================
+elif st.session_state.page_active == "demande":
+    st.markdown('<p class="cl-sec-title">Nouvelle demande d\'assurance automobile</p>', unsafe_allow_html=True)
+
+    if st.session_state.evaluation:
+        ev  = st.session_state.evaluation
+        est = ev.get("estimation") or {}
+
+        statut_map = {
+            "APPROUVE"            : ("vert",   "✅ Pré-approuvé"),
+            "VERIFICATION_HUMAINE": ("orange", "⏳ En cours de traitement"),
+            "REFUSE"              : ("rouge",  "❌ Demande refusée"),
+        }
+        color, label = statut_map.get(ev["statut"], ("bleu", ev["statut"]))
+        st.markdown(f'<span class="cl-badge {color}" style="font-size:13px;padding:8px 16px">{label}</span>', unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        if est and ev["statut"] != "REFUSE":
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown(f"""
+                <div class="cl-estimation">
+                  <div class="cl-est-label">Estimation prime annuelle</div>
+                  <div class="cl-est-val">{est.get('prime_annuelle','N/A')}$</div>
+                  <div class="cl-est-sub">{est.get('prime_mensuelle','N/A')}$ / mois · Profil {est.get('profil','')}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            with c2:
+                st.markdown(f"""
+                <div class="cl-card">
+                  <div class="cl-card-title">📋 Résumé</div>
+                  <div style="font-size:13px;color:var(--text2);line-height:1.8">
+                    Score de risque : <strong>{ev.get('score',0)}/12</strong><br>
+                    Demande ID : <code style="font-size:11px">{ev.get('demande_id','')}</code>
+                  </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+        st.markdown(f"""
+        <div class="cl-card">
+          <div class="cl-card-title">💬 Explication</div>
+          <div style="font-size:13.5px;color:var(--text2);line-height:1.7">{ev.get('explication_client','')}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if st.button("➕ Soumettre une autre demande"):
+            st.session_state.evaluation = None
+            st.rerun()
+        st.stop()
+
+    # Formulaire vehicule
+    vehicules = get_vehicules_client(str(client.get("applicant_id","")))
+
+    tab_existant, tab_nouveau = st.tabs(["🚗 Véhicule existant", "➕ Nouveau véhicule"])
+
+    with tab_existant:
+        if not vehicules:
+            st.info("Aucun véhicule enregistré. Utilisez l'onglet 'Nouveau véhicule'.")
+        else:
+            options = {f"{v.get('year')} {v.get('make')} {v.get('model')} — VIN: {v.get('vin','')}": v for v in vehicules}
+            choix   = st.selectbox("Choisir un véhicule", list(options.keys()))
+            veh     = options[choix]
+            st.markdown(f"""
+            <div class="cl-form-section">
+              <div class="cl-form-title">🚗 Détails du véhicule</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px;color:var(--text2)">
+                <div>Année : <strong>{veh.get('year','')}</strong></div>
+                <div>Marque : <strong>{veh.get('make','')}</strong></div>
+                <div>Modèle : <strong>{veh.get('model','')}</strong></div>
+                <div>Valeur : <strong>{veh.get('vehicle_value','N/A')}$</strong></div>
+                <div>VIN : <strong>{veh.get('vin','')}</strong></div>
+                <div>Usage : <strong>{veh.get('usage_type','')}</strong></div>
+              </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            if st.button("📋 Soumettre cette demande", use_container_width=True):
+                with st.spinner("Évaluation en cours..."):
+                    try:
+                        ev = evaluer_demande_sync(dict(client), dict(veh))
+                        st.session_state.evaluation = ev
+                        add_notif(f"Demande créée : {ev.get('demande_id','')}", "success")
+                    except Exception as e:
+                        add_notif(f"Erreur : {str(e)}", "error")
+                st.rerun()
+
+    with tab_nouveau:
+        with st.form("form_nouveau_veh"):
+            st.markdown('<div class="cl-form-title">🚗 Informations du véhicule</div>', unsafe_allow_html=True)
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                annee = st.number_input("Année", min_value=1990, max_value=2026, value=2022)
+                make  = st.text_input("Marque", placeholder="Toyota")
+            with c2:
+                model = st.text_input("Modèle", placeholder="Corolla")
+                trim  = st.text_input("Trim", placeholder="LE")
+            with c3:
+                vin   = st.text_input("VIN", placeholder="1HGCM82633A123456")
+                val   = st.number_input("Valeur ($)", min_value=0, value=25000, step=1000)
+
+            c4, c5 = st.columns(2)
+            with c4:
+                usage = st.selectbox("Type d'usage", ["Pleasure", "Commute", "Business"])
+                km    = st.number_input("KM annuels", min_value=0, value=15000, step=1000)
+            with c5:
+                is_fin   = st.checkbox("Financé")
+                is_lease = st.checkbox("Loué")
+                has_wint = st.checkbox("Pneus hiver")
+                has_anti = st.checkbox("Antivol")
+
+            st.markdown('<div class="cl-form-title" style="margin-top:1rem">⚠️ Caractéristiques spéciales</div>', unsafe_allow_html=True)
+            c6, c7, c8 = st.columns(3)
+            with c6: is_mod  = st.checkbox("Modifié")
+            with c7: is_sal  = st.checkbox("Salvage")
+            with c8: is_reb  = st.checkbox("Reconstruit")
+
+            mod_val = 0
+            if is_mod:
+                mod_val = st.number_input("Valeur des modifications ($)", min_value=0, value=0, step=100)
+
+            sub = st.form_submit_button("📋 Soumettre la demande", use_container_width=True)
+
+        if sub:
+            veh_data = {
+                "vehicle_id": "NEW", "applicant_id": client.get("applicant_id"),
+                "year": annee, "make": make, "model": model, "trim": trim,
+                "vin": vin, "vehicle_value": val, "usage_type": usage,
+                "annual_km": km, "is_financed": is_fin, "is_leased": is_lease,
+                "has_winter_tires": has_wint, "has_anti_theft": has_anti,
+                "is_modified": is_mod, "modification_value_cad": mod_val,
+                "is_salvage": is_sal, "is_rebuilt": is_reb,
+                "is_kit_car": False, "is_right_hand_drive": False,
+                "is_used_on_racetrack": False,
+            }
+            with st.spinner("Évaluation en cours..."):
+                try:
+                    ev = evaluer_demande_sync(dict(client), veh_data)
+                    st.session_state.evaluation = ev
+                    add_notif(f"Demande créée : {ev.get('demande_id','')}", "success")
+                except Exception as e:
+                    add_notif(f"Erreur : {str(e)}", "error")
+            st.rerun()
+
+# ==============================================================================
+# PAGE STATUT DES DEMANDES
+# ==============================================================================
+elif st.session_state.page_active == "statut":
+    st.markdown('<p class="cl-sec-title">Mes demandes d\'assurance</p>', unsafe_allow_html=True)
+
+    demandes = lire_demandes_client(str(client.get("applicant_id","")))
+
+    if not demandes:
+        st.markdown("""
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);padding:2.5rem;text-align:center;color:var(--text3)">
+          <div style="font-size:2.5rem;margin-bottom:0.75rem">📋</div>
+          <div style="font-size:15px;font-weight:500">Aucune demande</div>
+          <div style="font-size:13px;margin-top:4px">Soumettez votre première demande d'assurance</div>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        statut_map = {
+            "APPROUVE"            : ("vert",   "✅ Approuvé"),
+            "VERIFICATION_HUMAINE": ("orange", "⏳ En attente"),
+            "REFUSE"              : ("rouge",  "❌ Refusé"),
+        }
+        for d in reversed(demandes):
+            color, label = statut_map.get(str(d.get("statut","")), ("bleu", str(d.get("statut",""))))
+            prime = f"{d.get('prime_annuelle','')}$/an" if d.get("prime_annuelle") else "N/A"
+            st.markdown(f"""
+            <div class="cl-demande-card">
+              <div>
+                <div class="cl-demande-id">{d.get('demande_id','')}</div>
+                <div class="cl-demande-veh">{d.get('vehicle_year','')} {d.get('vehicle_make','')} {d.get('vehicle_model','')}</div>
+                <div class="cl-demande-date">{d.get('date_demande','')} · Prime : {prime}</div>
+                {f'<div style="font-size:12px;color:var(--text3);margin-top:4px">Commentaire : {d.get("commentaire_employe","")}</div>' if d.get("commentaire_employe") else ""}
+              </div>
+              <span class="cl-badge {color}">{label}</span>
+            </div>
+            """, unsafe_allow_html=True)
+================================================================================
+FICHIER 18 : pages/2_Employe.py  [⚠️ VOIR NOTE — passer à orchestrer_analyse_employe]
 ================================================================================
 
-FICHIERS À PLACER :
-  backend/agents/agent_rag.py              ← INCHANGÉ
-  backend/agents/agent_souscription.py     ← REMPLACER par la version ci-dessus
-  backend/agents/agent_tarification.py     ← NOUVEAU (Fichier 1)
-  backend/agents/orchestrateur.py          ← NOUVEAU (Fichier 2)
+import streamlit as st
+import pandas as pd
 
---------------------------------------------------------------------------------
-MODIFICATIONS pages/1_Client.py
---------------------------------------------------------------------------------
+from backend.utils.demandes_excel      import lire_demandes, mettre_a_jour_statut, get_stats
+from backend.agents.agent_souscription import analyser_demande_employe_sync
+from frontend.styles.employe_dev_css   import EMPLOYE_CSS
 
-AVANT :
-  from backend.agents.agent_souscription import evaluer_demande_sync
-  result = evaluer_demande_sync(client, vehicule_selectionne)
+COMPANY = "Desjardins Assurances"
 
-APRÈS :
-  from backend.agents.orchestrateur import orchestrer_evaluation
+st.set_page_config(page_title=f"{COMPANY} — Espace Employé", page_icon="👔", layout="wide", initial_sidebar_state="collapsed")
+st.markdown(EMPLOYE_CSS, unsafe_allow_html=True)
 
-  def progress(msg):
-      st.session_state["pipeline_status"] = msg
+# ── Session state ──────────────────────────────────────────────────
+if "em_notifs"    not in st.session_state: st.session_state.em_notifs    = []
+if "em_analyse"   not in st.session_state: st.session_state.em_analyse   = {}
+if "em_login"     not in st.session_state: st.session_state.em_login     = False
+if "em_nom"       not in st.session_state: st.session_state.em_nom       = ""
 
-  result = orchestrer_evaluation(
-      applicant   = client,
-      vehicle     = vehicule_selectionne,
-      on_progress = progress,
-  )
+def add_notif(msg, kind="success"):
+    st.session_state.em_notifs.append({"msg": msg, "kind": kind})
+    if len(st.session_state.em_notifs) > 3: st.session_state.em_notifs.pop(0)
 
-  # Accès aux résultats
-  statut       = result["statut"]             # REFUSE | VERIFICATION_HUMAINE | APPROUVE
-  explication  = result["explication_client"]
-  tarification = result["tarification"]       # dict VMR complet
-  demande_id   = result["demande_id"]
-  pipeline_log = result["pipeline_log"]       # pour la page Développeur
+# ── Login employe simple ───────────────────────────────────────────
+if not st.session_state.em_login:
+    st.markdown(f"""
+    <div class="em-navbar">
+      <span class="em-nav-brand">👔 {COMPANY} — Espace Employé</span>
+    </div>
+    """, unsafe_allow_html=True)
+    col = st.columns([1,1,1])[1]
+    with col:
+        st.markdown('<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r-xl);padding:2rem;box-shadow:var(--shadow-md)">', unsafe_allow_html=True)
+        st.markdown("### 🔐 Connexion Employé")
+        with st.form("em_login"):
+            nom  = st.text_input("Nom de l'employé")
+            code = st.text_input("Code d'accès", type="password", placeholder="employe2024")
+            sub  = st.form_submit_button("Se connecter", use_container_width=True)
+        if sub:
+            if code == "employe2024" and nom.strip():
+                st.session_state.em_login = True
+                st.session_state.em_nom   = nom.strip()
+                st.rerun()
+            else:
+                st.error("Code incorrect ou nom manquant.")
+        st.markdown('</div>', unsafe_allow_html=True)
+    st.stop()
 
---------------------------------------------------------------------------------
-MODIFICATIONS pages/2_Employe.py
---------------------------------------------------------------------------------
+# ── NAVBAR ─────────────────────────────────────────────────────────
+em_nom = st.session_state.em_nom
+st.markdown(f"""
+<div class="em-navbar">
+  <span class="em-nav-brand">👔 {COMPANY} — Espace Employé</span>
+  <div class="em-nav-links">
+    <a href="/Dashboard" class="em-nav-link">🏠 Accueil Client</a>
+    <a href="#" class="em-nav-link active">👔 Employé</a>
+    <a href="/Developpeur" class="em-nav-link">⚙️ Développeur</a>
+  </div>
+  <span style="color:rgba(255,255,255,0.8);font-size:13px">👤 {em_nom}</span>
+</div>
+""", unsafe_allow_html=True)
 
-AVANT :
-  from backend.agents.agent_souscription import analyser_demande_employe_sync
-  analyse = analyser_demande_employe_sync(demande)
+# Notifications
+for n in st.session_state.em_notifs:
+    icons = {"success":"✅","error":"❌","warn":"⚠️"}
+    st.markdown(f'<div class="em-notif {n["kind"]}">{icons.get(n["kind"],"ℹ️")} {n["msg"]}</div>', unsafe_allow_html=True)
 
-APRÈS :
-  from backend.agents.orchestrateur import orchestrer_analyse_employe
-  analyse = orchestrer_analyse_employe(demande)
+# ── KPI ────────────────────────────────────────────────────────────
+stats = get_stats()
+st.markdown(f"""
+<div class="em-kpi-grid">
+  <div class="em-kpi"><div class="em-kpi-val">{stats["total"]}</div><div class="em-kpi-lbl">Total demandes</div></div>
+  <div class="em-kpi"><div class="em-kpi-val" style="color:var(--amber)">{stats["en_attente"]}</div><div class="em-kpi-lbl">En attente</div></div>
+  <div class="em-kpi"><div class="em-kpi-val" style="color:var(--green)">{stats["approuve"]}</div><div class="em-kpi-lbl">Approuvées</div></div>
+  <div class="em-kpi"><div class="em-kpi-val" style="color:var(--red)">{stats["refuse"]}</div><div class="em-kpi-lbl">Refusées</div></div>
+</div>
+""", unsafe_allow_html=True)
 
---------------------------------------------------------------------------------
-MODIFICATIONS pages/1_Client.py + 3_Developpeur.py (chatbot)
---------------------------------------------------------------------------------
+# ── ONGLETS ────────────────────────────────────────────────────────
+tab_att, tab_tout = st.tabs(["⏳ En attente de décision", "📋 Toutes les demandes"])
 
-AVANT :
-  from backend.agents.agent_rag import chatbot_assurance
-  result = chatbot_assurance(question, historique)
+def render_demande_card(d, show_actions=True):
+    statut  = str(d.get("statut",""))
+    color_map = {"APPROUVE":"vert","VERIFICATION_HUMAINE":"orange","REFUSE":"rouge"}
+    color   = color_map.get(statut, "bleu")
+    label_map = {"APPROUVE":"✅ Approuvé","VERIFICATION_HUMAINE":"⏳ En attente","REFUSE":"❌ Refusé"}
+    label   = label_map.get(statut, statut)
+    d_id    = str(d.get("demande_id",""))
 
-APRÈS :
-  from backend.agents.orchestrateur import orchestrer_chatbot
-  result = orchestrer_chatbot(question, historique)
+    st.markdown(f"""
+    <div class="em-card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <div>
+          <div style="font-size:11px;color:var(--text3);font-family:monospace">{d_id}</div>
+          <div style="font-size:15px;font-weight:600;color:var(--text);margin:3px 0">
+            {d.get('first_name','')} {d.get('last_name','')}
+          </div>
+          <div style="font-size:13px;color:var(--text2)">
+            {d.get('vehicle_year','')} {d.get('vehicle_make','')} {d.get('vehicle_model','')}
+            · {d.get('vehicle_value','')}$ · Score: <strong>{d.get('score_risque','')}</strong>
+          </div>
+          <div style="font-size:12px;color:var(--text3);margin-top:3px">
+            Prime estimée: {d.get('prime_annuelle','N/A')}$/an
+            · Soumis: {d.get('date_demande','')}
+          </div>
+          {f'<div style="font-size:12px;color:var(--amber);margin-top:3px">Triggers: {d.get("triggers","")}</div>' if d.get('triggers') else ''}
+        </div>
+        <span class="em-badge {color}">{label}</span>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
 
---------------------------------------------------------------------------------
-AFFICHAGE TARIFICATION VMR dans la page Client
---------------------------------------------------------------------------------
+    if show_actions and statut == "VERIFICATION_HUMAINE":
+        col_a, col_b, col_c = st.columns([2, 1, 1])
+        with col_a:
+            key_analyse = f"analyse_{d_id}"
+            if st.button(f"🔍 Analyser avec IA", key=key_analyse, use_container_width=True):
+                with st.spinner("Analyse en cours..."):
+                    try:
+                        result = analyser_demande_employe_sync(d)
+                        st.session_state.em_analyse[d_id] = result["analyse_employe"]
+                    except Exception as e:
+                        add_notif(f"Erreur analyse : {str(e)}", "error")
+                st.rerun()
+        with col_b:
+            if st.button("✅ Approuver", key=f"app_{d_id}", use_container_width=True):
+                commentaire = st.session_state.get(f"comm_{d_id}", "")
+                if mettre_a_jour_statut(d_id, "APPROUVE", em_nom, commentaire):
+                    add_notif(f"Demande {d_id} approuvée !", "success")
+                else:
+                    add_notif("Erreur MAJ.", "error")
+                st.rerun()
+        with col_c:
+            if st.button("❌ Refuser", key=f"ref_{d_id}", use_container_width=True):
+                commentaire = st.session_state.get(f"comm_{d_id}", "")
+                if mettre_a_jour_statut(d_id, "REFUSE", em_nom, commentaire):
+                    add_notif(f"Demande {d_id} refusée.", "warn")
+                else:
+                    add_notif("Erreur MAJ.", "error")
+                st.rerun()
 
-  if result["tarification"]:
-      t = result["tarification"]
-      st.markdown(f"**Groupe VMR :** {t['groupe_vmr']} / 99")
-      st.markdown(f"**Source :** {t['source_vmr']}")
-      st.markdown(f"**Justification :** {t['justification_vmr']}")
+        st.text_input("Commentaire (optionnel)", key=f"comm_{d_id}", placeholder="Raison de la décision...")
 
-      if t.get("prime_annuelle"):
-          st.metric("Prime annuelle estimée", f"{t['prime_annuelle']:,.0f} $")
-          st.metric("Prime mensuelle",        f"{t['prime_mensuelle']:,.0f} $")
-          st.markdown(f"Fourchette : {t['fourchette_basse']:,.0f} $ – {t['fourchette_haute']:,.0f} $")
+        if d_id in st.session_state.em_analyse:
+            st.markdown(f"""
+            <div class="em-analyse-box">
+              <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--text3);margin-bottom:8px">
+                Analyse IA
+              </div>
+              {st.session_state.em_analyse[d_id].replace(chr(10), '<br>')}
+            </div>
+            """, unsafe_allow_html=True)
+    elif show_actions and statut != "VERIFICATION_HUMAINE":
+        if d.get("commentaire_employe"):
+            st.markdown(f'<div style="font-size:12px;color:var(--text3);padding:6px 0">Décision : {d.get("employe_decision","")} — {d.get("commentaire_employe","")}</div>', unsafe_allow_html=True)
 
-      if t.get("necessite_souscription_specialisee"):
-          st.warning("⚠️ Ce véhicule nécessite une souscription spécialisée (groupe VMR 99).")
+with tab_att:
+    df = lire_demandes()
+    if df.empty:
+        st.info("Aucune demande.")
+    else:
+        en_attente = df[df["statut"] == "VERIFICATION_HUMAINE"].to_dict("records")
+        if not en_attente:
+            st.success("✅ Aucune demande en attente.")
+        else:
+            st.markdown(f'<p class="em-sec-title">{len(en_attente)} demande(s) en attente</p>', unsafe_allow_html=True)
+            for d in reversed(en_attente):
+                render_demande_card(d, show_actions=True)
+                st.markdown("---")
 
-      for comp in t.get("composantes", []):
-          signe = "+" if comp["type"] == "majoration" else ("-" if comp["type"] == "rabais" else "")
-          st.markdown(f"- {comp['label']} : {signe}{comp['montant']:,.0f} $")
+with tab_tout:
+    df = lire_demandes()
+    if df.empty:
+        st.info("Aucune demande.")
+    else:
+        filtre = st.selectbox("Filtrer par statut", ["Tous", "VERIFICATION_HUMAINE", "APPROUVE", "REFUSE"])
+        if filtre != "Tous":
+            df = df[df["statut"] == filtre]
+        st.markdown(f'<p class="em-sec-title">{len(df)} demande(s)</p>', unsafe_allow_html=True)
+        st.dataframe(df[["demande_id","first_name","last_name","vehicle_make","vehicle_model","score_risque","prime_annuelle","statut","date_demande","employe_decision"]],
+                     use_container_width=True, height=500)
 
---------------------------------------------------------------------------------
-AFFICHAGE LOG PIPELINE dans la page Développeur
---------------------------------------------------------------------------------
+if st.button("🚪 Se déconnecter"):
+    st.session_state.em_login = False
+    st.session_state.em_nom   = ""
+    st.rerun()
+================================================================================
+FICHIER 19 : pages/3_Developpeur.py  [INCHANGÉ]
+================================================================================
 
-  if "pipeline_log" in st.session_state.get("last_result", {}):
-      for etape in st.session_state["last_result"]["pipeline_log"]:
-          icone = "✅" if etape["statut"] == "ok" else ("⏭️" if etape["statut"] == "skip" else "❌")
-          st.markdown(f"{icone} **{etape['etape']}** — {etape['duree_ms']} ms")
-          st.json(etape["data"])
+import streamlit as st
+import json, asyncio, concurrent.futures
 
---------------------------------------------------------------------------------
-ARCHITECTURE FINALE
---------------------------------------------------------------------------------
+from backend.utils.demandes_excel import lire_demandes, get_stats
+from backend.indexer               import index_existe, creer_index, indexer_pdfs
+from backend.config.settings       import (
+    get_credential, get_openai_client,
+    INDEX_REGLES, DOSSIER_PDFS, AZURE_OPENAI_DEPLOYMENT
+)
+from frontend.styles.employe_dev_css import DEV_CSS
 
-  pages/1_Client.py
-      └─► orchestrateur.orchestrer_evaluation()
-              ├─► csv_handler.get_conducteurs_additionnels()
-              ├─► decisions.evaluer_demande()              [règles métier]
-              ├─► agent_tarification.agent_tarification_vmr()
-              │       ├─► RAG Azure AI Search (vmr_vehicle_rating_fr)
-              │       └─► GPT : groupe VMR + calcul prime
-              ├─► GPT : explication client
-              └─► demandes_excel.creer_demande()
+COMPANY = "Desjardins Assurances"
 
-  pages/2_Employe.py
-      └─► orchestrateur.orchestrer_analyse_employe()
-              └─► agent_souscription.agent_analyse_employe()
+st.set_page_config(page_title=f"{COMPANY} — Développeur", page_icon="⚙️", layout="wide", initial_sidebar_state="collapsed")
+st.markdown(DEV_CSS, unsafe_allow_html=True)
 
-  pages/1_Client.py + pages/3_Developpeur.py (chatbot)
-      └─► orchestrateur.orchestrer_chatbot()
-              └─► agent_rag.agent_chatbot_assurance()
+# ── Session state ──────────────────────────────────────────────────
+if "dv_notifs"       not in st.session_state: st.session_state.dv_notifs       = []
+if "ragas_results"   not in st.session_state: st.session_state.ragas_results   = None
+if "judge_result"    not in st.session_state: st.session_state.judge_result    = None
+
+def add_notif(msg, kind="info"):
+    st.session_state.dv_notifs.append({"msg": msg, "kind": kind})
+    if len(st.session_state.dv_notifs) > 3: st.session_state.dv_notifs.pop(0)
+
+@st.cache_resource
+def load_azure():
+    try: return get_credential(), get_openai_client()
+    except Exception as e: st.error(f"Erreur Azure : {e}"); st.stop()
+
+credential, openai_client = load_azure()
+
+@st.cache_data(ttl=60)
+def check_index(_cred):
+    return index_existe(_cred, INDEX_REGLES)
+
+# ── NAVBAR ─────────────────────────────────────────────────────────
+st.markdown(f"""
+<div class="dv-navbar">
+  <span class="dv-brand">⚙️ {COMPANY} — Dev Console</span>
+  <div class="dv-nav-links">
+    <a href="/Client" class="dv-nav-link">🏠 Client</a>
+    <a href="/Employe" class="dv-nav-link">👔 Employé</a>
+    <a href="#" class="dv-nav-link active">⚙️ Dev</a>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+# Notifications
+for n in st.session_state.dv_notifs:
+    st.markdown(f'<div class="dv-notif {n["kind"]}">{n["msg"]}</div>', unsafe_allow_html=True)
+
+# ── KPI ────────────────────────────────────────────────────────────
+stats     = get_stats()
+idx_actif = check_index(credential)
+idx_badge = '<span class="dv-badge green">✅ Actif</span>' if idx_actif else '<span class="dv-badge red">❌ Absent</span>'
+
+st.markdown(f"""
+<div class="dv-kpi-grid">
+  <div class="dv-kpi"><div class="dv-kpi-val">{stats["total"]}</div><div class="dv-kpi-lbl">Demandes total</div></div>
+  <div class="dv-kpi"><div class="dv-kpi-val" style="color:var(--amber)">{stats["en_attente"]}</div><div class="dv-kpi-lbl">En attente</div></div>
+  <div class="dv-kpi"><div class="dv-kpi-val" style="color:var(--green)">{stats["approuve"]}</div><div class="dv-kpi-lbl">Approuvées</div></div>
+  <div class="dv-kpi"><div class="dv-kpi-val" style="color:var(--red)">{stats["refuse"]}</div><div class="dv-kpi-lbl">Refusées</div></div>
+</div>
+""", unsafe_allow_html=True)
+
+# ── ONGLETS ────────────────────────────────────────────────────────
+tab_index, tab_ragas, tab_judge, tab_data = st.tabs([
+    "🗂️ Index RAG", "📊 RAGAS", "🧑‍⚖️ LLM Judge", "📋 Données"
+])
+
+# ── INDEX ─────────────────────────────────────────────────────────
+with tab_index:
+    st.markdown('<p class="dv-sec-title">Statut index Azure AI Search</p>', unsafe_allow_html=True)
+
+    st.markdown(f"""
+    <div class="dv-card" style="display:flex;align-items:center;justify-content:space-between">
+      <div>
+        <div style="font-size:13.5px;font-weight:600;color:var(--text)">Index — règles assurance auto</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:3px;font-family:var(--font-m)">{INDEX_REGLES}</div>
+        <div style="font-size:12px;color:var(--text2);margin-top:5px">PDFs dans : {DOSSIER_PDFS}/</div>
+      </div>
+      {idx_badge}
+    </div>
+    """, unsafe_allow_html=True)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("⚡ Indexer les PDFs", use_container_width=True):
+            with st.spinner("Indexation..."):
+                try:
+                    if not idx_actif:
+                        creer_index(credential, INDEX_REGLES)
+                    chunks, fichiers = indexer_pdfs(credential, openai_client, DOSSIER_PDFS, INDEX_REGLES)
+                    add_notif(f"✅ {fichiers} PDFs · {chunks} chunks indexés", "success")
+                    st.cache_data.clear()
+                except Exception as e:
+                    add_notif(f"Erreur : {str(e)}", "error")
+            st.rerun()
+    with col2:
+        if st.button("🔄 Rafraîchir", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
+
+    st.markdown('<p class="dv-sec-title" style="margin-top:1.5rem">Guide d\'indexation</p>', unsafe_allow_html=True)
+    st.markdown("""
+    <div style="background:var(--surface2);border:1px solid var(--border2);border-radius:var(--r-md);padding:1rem;font-family:var(--font-m);font-size:12px;color:var(--text2);line-height:1.8">
+      1. Placez vos PDFs dans : data/pdfs/<br>
+      2. Cliquez "Indexer les PDFs"<br>
+      3. L'index sera créé automatiquement si absent<br>
+      4. Re-indexer = cliquer à nouveau (chunks dupliqués sinon, nettoyer d'abord)
+    </div>
+    """, unsafe_allow_html=True)
+
+# ── RAGAS ─────────────────────────────────────────────────────────
+with tab_ragas:
+    st.markdown('<p class="dv-sec-title">Évaluation RAGAS — Azure OpenAI</p>', unsafe_allow_html=True)
+
+    col1, col2 = st.columns([3,2])
+    with col1:
+        q1  = st.text_input("Question 1", placeholder="Qu'est-ce qu'un accident responsable ?")
+        gt1 = st.text_area("Réponse attendue 1", height=65)
+        q2  = st.text_input("Question 2", placeholder="Quand une demande est-elle refusée ?")
+        gt2 = st.text_area("Réponse attendue 2", height=65)
+    with col2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("📊 Lancer RAGAS", use_container_width=True):
+            questions     = [q for q in [q1,q2] if q]
+            ground_truths = [g for g in [gt1,gt2] if g]
+            if not questions:
+                add_notif("Ajoutez au moins une question.", "error")
+            else:
+                with st.spinner("Calcul RAGAS..."):
+                    try:
+                        from ragas import evaluate, RunConfig
+                        from ragas.metrics import faithfulness, answer_relevancy, context_precision, context_recall
+                        from ragas.llms import LangchainLLMWrapper
+                        from ragas.embeddings import LangchainEmbeddingsWrapper
+                        from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
+                        from azure.identity import get_bearer_token_provider
+                        from datasets import Dataset
+                        import os
+
+                        tp = get_bearer_token_provider(credential, "https://cognitiveservices.azure.com/.default")
+                        rl = AzureChatOpenAI(
+                            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+                            azure_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT","gpt-4-5"),
+                            api_version=os.getenv("AZURE_API_VERSION","2024-12-01-preview"),
+                            azure_ad_token_provider=tp
+                        )
+                        re = AzureOpenAIEmbeddings(
+                            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+                            azure_deployment=os.getenv("EMBEDDING_MODEL","text-embedding-ada-002"),
+                            api_version=os.getenv("AZURE_API_VERSION","2024-12-01-preview"),
+                            azure_ad_token_provider=tp
+                        )
+                        from backend.agents.agent_rag import chatbot_assurance
+                        answers, contexts = [], []
+                        for q in questions:
+                            r = chatbot_assurance(q)
+                            answers.append(r["reponse"])
+                            contexts.append([r["reponse"]])
+                        metriques = [faithfulness, answer_relevancy, context_precision, context_recall]
+                        for m in metriques:
+                            m.llm        = LangchainLLMWrapper(rl)
+                            m.embeddings = LangchainEmbeddingsWrapper(re)
+                        results = evaluate(
+                            Dataset.from_dict({"question":questions,"answer":answers,"contexts":contexts,"ground_truth":ground_truths[:len(questions)]}),
+                            metrics=metriques, run_config=RunConfig(max_retries=3, timeout=120)
+                        )
+                        st.session_state.ragas_results = results
+                        add_notif("RAGAS terminé !", "success")
+                    except ImportError:
+                        add_notif("pip install ragas langchain-openai datasets", "error")
+                    except Exception as e:
+                        add_notif(f"Erreur RAGAS : {str(e)}", "error")
+            st.rerun()
+
+    if st.session_state.ragas_results:
+        results = st.session_state.ragas_results
+        st.markdown('<p class="dv-sec-title" style="margin-top:1.5rem">Résultats</p>', unsafe_allow_html=True)
+
+        def get_score(res, key):
+            import numpy as np
+            try:
+                val = res[key]
+                if isinstance(val, list): return round(float(np.mean(val)), 2)
+                return round(float(val), 2)
+            except: return 0.0
+
+        scores = [
+            ("Faithfulness",     get_score(results,"faithfulness"),     "var(--green)"),
+            ("Answer Relevancy", get_score(results,"answer_relevancy"),  "var(--accent)"),
+            ("Ctx Precision",    get_score(results,"context_precision"), "var(--amber)"),
+            ("Ctx Recall",       get_score(results,"context_recall"),    "var(--red)"),
+        ]
+        cols = st.columns(4)
+        for i, (label, score, color) in enumerate(scores):
+            pct = int(score * 100)
+            with cols[i]:
+                st.markdown(f"""
+                <div class="dv-score-card">
+                  <div class="dv-score-val" style="color:{color}">{score:.2f}</div>
+                  <div class="dv-score-lbl">{label}</div>
+                  <div class="dv-score-bar"><div class="dv-score-fill" style="width:{pct}%;background:{color}"></div></div>
+                </div>
+                """, unsafe_allow_html=True)
+
+# ── LLM JUDGE ─────────────────────────────────────────────────────
+with tab_judge:
+    st.markdown('<p class="dv-sec-title">LLM as a Judge</p>', unsafe_allow_html=True)
+
+    col1, col2 = st.columns([3,2])
+    with col1:
+        question_j = st.text_input("Question à évaluer", placeholder="Quand est-ce qu'une demande est refusée directement ?")
+    with col2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        lancer = st.button("🧑‍⚖️ Évaluer", use_container_width=True)
+
+    if lancer and question_j.strip():
+        with st.spinner("Évaluation en cours..."):
+            try:
+                from backend.agents.agent_rag import chatbot_assurance
+                r = chatbot_assurance(question_j)
+                prompt = f"""
+Tu evalues une reponse RAG assurance auto. JSON uniquement :
+{{"fidelite":{{"score":0,"commentaire":""}},"pertinence":{{"score":0,"commentaire":""}},"completude":{{"score":0,"commentaire":""}},"verdict":"BON","suggestion":""}}
+Scores 0-10. Verdict: BON(>=8), MOYEN(>=6), MAUVAIS(<6)
+QUESTION: {question_j}
+REPONSE: {r["reponse"][:600]}
+"""
+                async def eval_j():
+                    resp = openai_client.chat.completions.create(
+                        model=AZURE_OPENAI_DEPLOYMENT,
+                        messages=[{"role":"user","content":prompt}],
+                        max_tokens=400, temperature=0.2
+                    )
+                    return resp.choices[0].message.content
+
+                def run():
+                    loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
+                    try: return loop.run_until_complete(eval_j())
+                    finally: loop.close()
+
+                raw = concurrent.futures.ThreadPoolExecutor(max_workers=1).submit(run).result(timeout=60)
+                raw = raw.replace("```json","").replace("```","").strip()
+                j   = raw.find("{"); e = raw.rfind("}")+1
+                verdict = json.loads(raw[j:e])
+                st.session_state.judge_result = {"verdict":verdict,"question":question_j,"reponse":r["reponse"]}
+                add_notif("Évaluation terminée !", "success")
+            except Exception as e:
+                add_notif(f"Erreur : {str(e)}", "error")
+        st.rerun()
+
+    if st.session_state.judge_result:
+        jr  = st.session_state.judge_result
+        v   = jr["verdict"]
+        vc  = {"BON":"var(--green)","MOYEN":"var(--amber)","MAUVAIS":"var(--red)"}.get(v.get("verdict","MOYEN"),"var(--amber)")
+
+        st.markdown(f"""
+        <div style="background:var(--surface2);border:1px solid var(--border2);border-radius:var(--r-md);padding:1rem;margin-bottom:1rem;font-size:13px;color:var(--text2)">
+          <strong style="color:var(--text)">Q:</strong> {jr["question"]}<br>
+          <strong style="color:var(--text)">R:</strong> {jr["reponse"][:300]}...
+        </div>
+        <div style="background:var(--surface);border:1px solid var(--border2);border-radius:var(--r-lg);padding:1.2rem;margin-bottom:1rem">
+          <div style="font-size:1.2rem;font-weight:700;color:{vc};margin-bottom:6px">Verdict : {v.get("verdict","?")} </div>
+          <div style="font-size:13px;color:var(--text2)">💡 {v.get("suggestion","")}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        cols = st.columns(3)
+        for i, (label, data, color) in enumerate([
+            ("Fidélité",   v.get("fidelite",{}),   "var(--green)"),
+            ("Pertinence", v.get("pertinence",{}), "var(--accent)"),
+            ("Complétude", v.get("completude",{}), "var(--amber)"),
+        ]):
+            sc  = data.get("score",0)
+            pct = sc * 10
+            with cols[i]:
+                st.markdown(f"""
+                <div class="dv-score-card">
+                  <div class="dv-score-val" style="color:{color}">{sc}<span style="font-size:0.9rem;color:var(--text3)">/10</span></div>
+                  <div class="dv-score-lbl">{label}</div>
+                  <div class="dv-score-bar"><div class="dv-score-fill" style="width:{pct}%;background:{color}"></div></div>
+                  <div style="font-size:11px;color:var(--text3);margin-top:6px">{data.get("commentaire","")}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+# ── DONNEES ────────────────────────────────────────────────────────
+with tab_data:
+    st.markdown('<p class="dv-sec-title">Toutes les demandes</p>', unsafe_allow_html=True)
+    df = lire_demandes()
+    if df.empty:
+        st.info("Aucune demande.")
+    else:
+        if st.button("📥 Télécharger Excel"):
+            st.download_button(
+                label="⬇️ Télécharger demandes.xlsx",
+                data=open("demandes/demandes.xlsx","rb").read(),
+                file_name="demandes.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        st.dataframe(df, use_container_width=True, height=500)
+================================================================================
+
+FICHIERS __init__.py — CREER CES FICHIERS VIDES
+================================================================================
+
+Creez ces fichiers vides (contenu vide) :
+
+backend/__init__.py
+backend/config/__init__.py
+backend/rules/__init__.py
+backend/agents/__init__.py
+backend/utils/__init__.py
+frontend/__init__.py
+frontend/styles/__init__.py
+
+================================================================================
+REGLES COMPLETES — REFERENCE RAPIDE
+================================================================================
+
+PROFILS CONDUCTEUR (years_licenced + licence_class) :
+  Profile 1 → licensed >= 15 ans
+  Profile 2 → licensed 4 a < 15 ans
+  Profile 3 → licensed < 4 ans OU G1/G2
+
+TABLE DE POINTS :
+  Evenement                          P1   P2   P3
+  Minor conviction 1re                2    2    4
+  Minor conviction additionnelle      4    5    6
+  Major conviction chaque            12   16   16
+  Careless-driving chaque            15   16   16
+  Serious/Criminal chaque            16   16   16
+  Accident responsable 3yr chaque     6    7    8
+  Accident responsable 3-6yr chaque   6    6    8
+  Annulation non-paiement 1re         4    4    4
+  Annulation non-paiement addl        6    6    6
+
+SEUIL : Score >= 12 → declined_referred_gaa (REFUSE)
+
+REFUS DIRECTS (sans calcul de score) :
+  - VIN dans vin_blacklist_hidden.csv
+  - has_dui_5yr = True
+  - has_criminal_record_10yr = True
+  - refused_insurance_3yr = True
+  - refused_to_provide_info = True
+  - no_insurable_interest = True
+  - owes_money_to_desjardins = True
+  - has_misrepresentation_history = True
+  - licence_suspension_3yr = True
+  - vehicle_value >= 500,000
+  - is_kit_car = True
+  - is_used_on_racetrack = True
+
+TRIGGERS VERIFICATION HUMAINE :
+  - vehicle_value 200k-500k            → high_value_vehicle
+  - is_modified=True + mod_val >= 2000 → modified_vehicle
+  - is_salvage ou is_rebuilt = True    → salvage_or_rebuilt
+  - has_gap_in_coverage = True         → gap_in_coverage
+  - years_prior_insurance = 0          → gap_in_coverage
+  - has_foreign_driving_experience     → foreign_experience
+  - commercial_use_description non vide → commercial_use_borderline
+
+REGLE SPECIALE : is_excluded=True → accidents/convictions NE COMPTENT PAS
+
+STATUTS EXCEL :
+  APPROUVE / VERIFICATION_HUMAINE / REFUSE
+
+================================================================================
+COLONNES CSV DE REFERENCE
+================================================================================
+
+labeled_applicants.csv :
+  applicant_id, first_name, last_name, date_of_birth, age, language,
+  email, phone, province, city, postal_code, territory,
+  licence_number, licence_class, years_licenced,
+  minor_convictions_3yr, major_convictions_3yr, serious_convictions_3yr,
+  at_fault_accidents_3yr, at_fault_accidents_6yr, nonpayment_cancellations_3yr,
+  has_dui_5yr, licence_suspension_3yr, has_criminal_record_10yr,
+  has_misrepresentation_history, owes_money_to_desjardins,
+  years_prior_insurance, has_gap_in_coverage, has_foreign_driving_experience,
+  refused_insurance_3yr, refused_to_provide_info, no_insurable_interest,
+  is_existing_desjardins_member, has_home_insurance, completed_driving_course,
+  clientele, weeks_vehicle_outside_canada, group_partnership_id
+
+labeled_vehicles.csv :
+  vehicle_id, applicant_id, year, make, model, trim, vin,
+  vehicle_value, vehicle_age, usage_type, annual_km,
+  is_financed, is_leased, lender_lessor, lender_recognized,
+  has_winter_tires, has_anti_theft, has_tracking_system,
+  is_salvage, is_rebuilt, is_kit_car, is_right_hand_drive,
+  is_modified, modification_value_cad, has_converted_fuel,
+  is_antique, is_used_on_racetrack, commercial_use_description
+
+labeled_additional_drivers.csv :
+  first_name, last_name, date_of_birth, age, relationship,
+  licence_class, years_licenced, is_occasional, is_excluded,
+  has_criminal_record_10yr, minor_convictions_3yr, major_convictions_3yr,
+  at_fault_accidents_3yr, assigned_vehicle_ids
+
+licence_validation_hidden.csv :
+  subject_type, subject_id, applicant_id, licence_number, licence_class,
+  years_licenced, date_of_birth, age_as_of_2026_04_27,
+  max_possible_years_licenced, is_valid_licence, validation_status
+
+vin_blacklist_hidden.csv :
+  blacklist_id, vin, reason, added_date, source_vehicle_id
+
+================================================================================
+ORDRE DE DEMARRAGE
+================================================================================
+
+1. Placez les fichiers CSV dans data/
+2. Placez les PDFs dans data/pdfs/
+3. Configurez .env avec vos variables Azure
+4. pip install streamlit openai azure-identity azure-search-documents pypdf pandas openpyxl
+5. streamlit run app.py
+6. Allez sur page Developpeur → Indexer les PDFs
+7. Login client avec un applicant_id et postal_code existant
+
+Connexion employe : code = "employe2024"
 
 ================================================================================
 FIN DU FICHIER
+================================================================================
+
+
+================================================================================
+NOTE DE MIGRATION — pages/1_Client.py et pages/2_Employe.py
+================================================================================
+
+Dans pages/1_Client.py, remplacer :
+  AVANT : from backend.agents.agent_souscription import evaluer_demande_sync
+          from backend.agents.agent_rag import chatbot_assurance
+          ev = evaluer_demande_sync(dict(client), dict(veh))
+          result = chatbot_assurance(question, historique)
+
+  APRÈS : from backend.agents.orchestrateur import orchestrer_evaluation, orchestrer_chatbot
+          def on_progress(msg): status_placeholder.info(msg)
+          result = orchestrer_evaluation(dict(client), dict(veh), on_progress=on_progress)
+          result = orchestrer_chatbot(question, historique)
+
+          # Accès résultats enrichis :
+          result["statut"]             # REFUSE | VERIFICATION_HUMAINE | APPROUVE
+          result["explication_client"] # texte GPT
+          result["tarification"]       # dict VMR complet
+          result["demande_id"]
+          result["pipeline_log"]       # log étapes pour page Développeur
+
+Dans pages/2_Employe.py, remplacer :
+  AVANT : from backend.agents.agent_souscription import analyser_demande_employe_sync
+          result = analyser_demande_employe_sync(d)
+
+  APRÈS : from backend.agents.orchestrateur import orchestrer_analyse_employe
+          result = orchestrer_analyse_employe(d)
+
+Affichage tarification VMR dans la page Client :
+  if result["tarification"]:
+      t = result["tarification"]
+      st.markdown(f"Groupe VMR : {t['groupe_vmr']} / 99  ({t['source_vmr']})")
+      st.markdown(f"{t['justification_vmr']}")
+      if t.get("prime_annuelle"):
+          st.metric("Prime annuelle", f"{t['prime_annuelle']:,.0f} $")
+          st.metric("Prime mensuelle", f"{t['prime_mensuelle']:,.0f} $")
+          st.markdown(f"Fourchette : {t['fourchette_basse']:,.0f}$ – {t['fourchette_haute']:,.0f}$")
+      if t.get("necessite_souscription_specialisee"):
+          st.warning("Ce véhicule nécessite une souscription spécialisée (groupe VMR 99).")
+      for comp in t.get("composantes", []):
+          signe = "+" if comp["type"] == "majoration" else ("-" if comp["type"] == "rabais" else "")
+          st.markdown(f"- {comp['label']} : {signe}{comp['montant']:,.0f}$")
+
+================================================================================
+FIN DU FICHIER — VERSION COMPLÈTE V2
 ================================================================================
