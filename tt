@@ -102,7 +102,7 @@ sur le client. Pas juste ce qu'il a écrit dans le formulaire — mais aussi
 les autres conducteurs qui partagent le même véhicule, et la validité de
 son permis de conduire. On veut avoir le portrait complet avant de commencer.
  
-Ensuite, le système applique les règles de Desjardins de façon automatique.
+Ensuite, le système applique les règles de +++ de façon automatique.
 C'est comme un agent qui vérifie une liste de points un par un.
  
 Est-ce que le véhicule est sur une liste noire ? Si oui, refus immédiat.
@@ -121,18 +121,18 @@ Si le client passe toutes ces vérifications, on passe à l'étape la plus
 importante : calculer le prix de son assurance.
  
 On a un agent spécialisé pour ça. Il consulte les documents officiels de
-Desjardins pour trouver le groupe de tarification du véhicule — un numéro
+++ pour trouver le groupe de tarification du véhicule — un numéro
 entre 1 et 99 qui représente le niveau de risque du modèle. Une petite
 voiture économique sera dans les premiers groupes. Une voiture de luxe
 sera dans les derniers.
  
 Une fois ce groupe trouvé, l'agent calcule le prix en tenant compte du
 profil du conducteur, de son score de risque, et de tous les rabais
-disponibles — pneus d'hiver, antivol, fidélité Desjardins.
+disponibles — pneus d'hiver, antivol, fidélité ++.
  
 Ce qui est vraiment important ici, c'est que notre système ne contient
 aucune formule inventée par nous. Tout vient des documents officiels de
-Desjardins. Si les règles changent un jour, on met à jour les documents
+++. Si les règles changent un jour, on met à jour les documents
 et le système suit automatiquement. C'est flexible et fiable.
  
 Après ça, un autre agent prend les résultats et les transforme en langage
