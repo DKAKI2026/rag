@@ -1,0 +1,151 @@
+================================================================================
+DIAPO 1 
+================================================================================
+ 
+
+ 
+"Aujourd'hui, chez 666666, une soumission automobile en ligne prend environ
+15 minutes. Le canal web génère des primes plus élevées — ce qui est excellent —
+mais il convertit moins bien que le centre d'appels. Pourquoi ? Parce que le
+parcours web est autonome mais fragile : le client se retrouve seul face à un
+formulaire complexe, sans accompagnement.
+ 
+Le centre d'appels, lui, convertit mieux grâce à l'accompagnement humain, mais
+il demande un effort opérationnel important et coûteux.
+ 
+Notre question était simple : peut-on combiner le meilleur des deux ?
+Accélérer les validations comme le fait le web, tout en conservant le jugement
+humain comme au centre d'appels ?
+ 
+C'est exactement ce que notre solution apporte.
+
+================================================================================
+DIAPO 2 — Besoin, état cible et proposition de valeur
+================================================================================
+ 
+"Parlons de l'état actuel. Le parcours est fragmenté : le client commence sur
+le web, est transféré au téléphone, répète ses informations, et les validations
+sont manuelles et répétitives.
+ 
+Notre état cible repose sur quatre piliers concrets, que vous pouvez voir
+dans notre application en ce moment même :
+ 
+  1. Intrant assisté par IA
+     Le client peut poser des questions sur les règles d'assurance directement
+     dans l'application et obtenir des réponses basées sur les documents
+     officiels 66666 — pas sur des connaissances générales de l'IA.
+ 
+  2. Validations automatisées
+     Dès qu'une demande est soumise, notre système applique toutes les règles
+     métier en moins d'une seconde : score de risque, refus directs, détection
+     des cas complexes. Aucune intervention humaine requise pour les cas simples.
+ 
+  3. Décision explicable
+     Chaque décision — approuvée, refusée ou en vérification — est accompagnée
+     d'une explication claire générée pour le client. On ne dit pas juste
+     'refusé'. On explique pourquoi, avec compassion et transparence.
+ 
+  4. Humain dans la boucle
+     Pour les dossiers complexes, l'employé reçoit une analyse complète et
+     prend la décision finale. Et le client lui-même doit confirmer son accord
+     avant que la police soit activée.
+ 
+Le résultat : moins de reprises manuelles, traitement plus rapide, meilleure
+conversion, et des décisions auditables."
+
+
+================================================================================
+DIAPO 
+================================================================================
+ 
+"Notre philosophie est claire : une décision automatisée, mais jamais
+incontrôlée.
+ 
+Premier pilier — Pipeline robuste.
+Notre application suit toujours le même parcours dans le même ordre, sans
+exception. Chaque étape est horodatée et visible dans notre interface
+développeur. Rien n'est laissé au hasard.
+ 
+Deuxième pilier — Données et RAG maîtrisés.
+Nos agents ne répondent jamais depuis leur mémoire générale. Dans chaque
+prompt, on leur dit explicitement de se baser uniquement sur les documents
+fournis. Ils cherchent les règles dans les PDFs indexés, et structurent
+leur réponse à partir de ces sources. Nous avons validé cette qualité avec
+RAGAS et LLM-as-a-Judge, que vous pouvez lancer directement depuis 
+l espace développeur.
+ 
+Troisième pilier — Humain dans la boucle.
+Chaque dossier complexe génère automatiquement une alerte pour l'employé.
+Celui-ci reçoit une analyse IA complète et peut approuver, refuser ou
+corriger. Aucun cas sensible ne passe sans validation humaine.
+ 
+Quatrième pilier — IA responsable.
+Les refus sont traités avant la tarification. Les cas sensibles sont
+dirigés vers un humain. Chaque demande est sauvegardée pour audit. Et le
+client donne sa confirmation finale avant activation de la police.
+L'IA propose, l'humain dispose."
+
+
+
+///////////////////////////////////
+
+Notre solution repose sur une architecture agentique composée de trois agents
+spécialisés, coordonnés par un orchestrateur central.
+ 
+Lorsqu'un client soumet une demande d'assurance, l'orchestrateur prend en
+charge le traitement de bout en bout. Son rôle est de séquencer le travail
+entre les agents dans un ordre précis et contrôlé, garantissant que chaque
+dossier suit exactement le même parcours, sans exception.
+
+La première chose qu'il fait, c'est aller chercher toutes les informations
+sur le client. Pas juste ce qu'il a écrit dans le formulaire — mais aussi
+les autres conducteurs qui partagent le même véhicule, et la validité de
+son permis de conduire. On veut avoir le portrait complet avant de commencer.
+ 
+Ensuite, le système applique les règles de Desjardins de façon automatique.
+C'est comme un agent qui vérifie une liste de points un par un.
+ 
+Est-ce que le véhicule est sur une liste noire ? Si oui, refus immédiat.
+ 
+Est-ce que le client a eu un DUI, un casier judiciaire, ou une suspension
+de permis récente ? Si oui, refus automatique.
+ 
+Sinon, on calcule un score de risque basé sur son historique de conduite —
+ses infractions, ses accidents, ses annulations d'assurance. Plus le score
+est élevé, plus le risque est grand. Si le score dépasse un certain seuil,
+c'est un refus. Et si le dossier a des particularités — un véhicule modifié
+ou une valeur très élevée — on le signale pour qu'un employé le regarde
+de plus près.
+ 
+Si le client passe toutes ces vérifications, on passe à l'étape la plus
+importante : calculer le prix de son assurance.
+ 
+On a un agent spécialisé pour ça. Il consulte les documents officiels de
+Desjardins pour trouver le groupe de tarification du véhicule — un numéro
+entre 1 et 99 qui représente le niveau de risque du modèle. Une petite
+voiture économique sera dans les premiers groupes. Une voiture de luxe
+sera dans les derniers.
+ 
+Une fois ce groupe trouvé, l'agent calcule le prix en tenant compte du
+profil du conducteur, de son score de risque, et de tous les rabais
+disponibles — pneus d'hiver, antivol, fidélité Desjardins.
+ 
+Ce qui est vraiment important ici, c'est que notre système ne contient
+aucune formule inventée par nous. Tout vient des documents officiels de
+Desjardins. Si les règles changent un jour, on met à jour les documents
+et le système suit automatiquement. C'est flexible et fiable.
+ 
+Après ça, un autre agent prend les résultats et les transforme en langage
+simple pour le client. Si c'est approuvé, il explique la prime et pourquoi.
+Si c'est en attente, il dit au client que son dossier est entre les mains
+d'un employé. Si c'est refusé, il explique les raisons avec respect.
+Côté employé, ce même agent prépare un résumé du dossier avec les points
+à surveiller et une recommandation claire.
+ 
+Finalement, tout est enregistré automatiquement pour qu'on puisse toujours
+retracer ce qui s'est passé et pourquoi.
+ 
+Et à côté de tout ça, on a un assistant virtuel disponible en permanence
+pour répondre aux questions des clients sur les règles d'assurance. Il ne
+répond jamais de sa propre tête — il cherche dans les documents officiels
+et donne une réponse basée uniquement sur ce qu'il trouve là-dedans.
